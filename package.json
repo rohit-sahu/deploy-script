@@ -1,0 +1,29 @@
+{
+  "name": "deploy-script",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "admin:create": "node node-scripts/create-admin.mjs",
+    "env:create": "node node-scripts/create-env.mjs",
+    "tunnel:token": "node node-scripts/create-cloudflare-tunnel-token.mjs",
+    "lint": "eslint",
+    "type-check": "tsc --noEmit",
+    "build": "npm install && node scripts/build.mjs && rm -rf node_modules",
+    "build:dev": "npm install && node scripts/build.mjs --dev"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20",
+    "auth": "^1.7.4",
+    "esbuild": "^0.28.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.4",
+    "typescript": "^5"
+  }
+}

@@ -1,3 +1,5 @@
+.vscode
+.idea
 # Logs
 logs
 *.log
@@ -46,6 +48,7 @@ web_modules/
 
 # TypeScript cache
 *.tsbuildinfo
+next-env.d.ts
 
 # Optional npm cache directory
 .npm
@@ -66,6 +69,8 @@ web_modules/
 .yarn-integrity
 
 # dotenv environment variable files
+# env files (can opt-in for committing if needed)
+.env*
 .env
 .env.*
 !.env.example
@@ -141,3 +146,37 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+
+# dependencies
+/node_modules
+/.pnp
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+.pnpm-debug.log*
+
+# secrets (docker compose secrets, e.g. cloudflare tunnel token)
+/secrets/*
+!/secrets/*.example
+
+# local read-through cache for resume content (see src/lib/resume-data.ts) —
+# generated at runtime, not source
+/data/
+
+# vercel
+.vercel
+

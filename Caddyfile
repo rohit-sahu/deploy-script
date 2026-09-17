@@ -1,0 +1,13 @@
+{
+	admin off
+	http_port 80
+	https_port 8443
+}
+
+# Cert-only mode: this site block exists solely so Caddy requests/renews a
+# real ACME certificate for $DOMAIN (via HTTP-01, proxied here by nginx).
+# nginx reads the resulting cert/key straight off the caddy_data volume and
+# handles all actual TLS termination and traffic.
+{$DOMAIN} {
+	respond "ok"
+}

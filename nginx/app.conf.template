@@ -1,0 +1,22 @@
+server {
+	listen 80;
+	server_name ${DOMAIN};
+
+	# Container healthcheck target; must not redirect (avoids following to
+	# HTTPS and failing TLS verification against a not-yet-trusted cert).
+	location = /healthz {
+		default_type text/plain;
+		return 200 "ok";
+	}
+
+	# Answer ACME HTTP-01 challenges by forwarding to the caddy companion.
+	location /.well-known/acme-challenge/ {
+		proxy_pass http://caddy:80;
+	}
+
+	# Block all other plain HTTP traffic; force HTTPS.
+	location / {
+		return 301 https://$host$request_uri;
+	}
+}
+

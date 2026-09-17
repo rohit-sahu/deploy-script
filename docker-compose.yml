@@ -1,0 +1,236 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Inlined into the JS bundle at build time (see Dockerfile comment) —
+        # runtime `environment:` below can't override this after the fact.
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://rohitkumar.skytech.in}
+    # Overridable so a pre-built image (e.g. pushed to ECR) can be pulled and
+    # run as-is instead of building on the deploy target — set IMAGE to the
+    # registry reference and use deploy.sh --pull instead of a plain build.
+    image: ${IMAGE:-rohit-portfolio:latest}
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      PORT: "3000"
+      # Docker auto-sets HOSTNAME to the container ID; Next's standalone
+      # server binds to it directly, which would make it unreachable on
+      # 127.0.0.1/service name. Force it to listen on all interfaces.
+      HOSTNAME: "0.0.0.0"
+      # Kept for reference/inspection only — has no effect at runtime, the
+      # real value is baked in via build.args above.
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://rohitkumar.skytech.in}
+      # File-based secret (never an env var), so the admin roster never shows
+      # up in `docker inspect`/`docker compose config`. See secrets/admin-users.json.example.
+      ADMIN_USERS_FILE: /run/secrets/admin_users
+      # Local read-through cache for resume content (see src/lib/resume-data.ts)
+      # — reads are served from this file, never MongoDB, except on first
+      # boot with an empty volume. Persisted on the resume_cache volume below.
+      # Also holds the downloaded profile photo (src/lib/photo-cache.ts) in
+      # the same directory, served via /api/profile-photo — the browser
+      # never hotlinks external photo URLs (e.g. Google Drive) directly.
+      RESUME_CACHE_FILE: /app/data/resume-cache.json
+    secrets:
+      - admin_users
+    volumes:
+      - resume_cache:/app/data
+    env_file:
+      # Also carries the server-only secrets for /admin: MONGODB_URI,
+      # MONGODB_DB, AUTH_SECRET (see .env.example). These are read at
+      # runtime, not build time, so unlike NEXT_PUBLIC_SITE_URL they don't
+      # need a build arg.
+      - path: ${ENV_FILE_PATH:-.env.local}
+        required: false
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/robots.txt"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      # Next's image optimizer needs to write its cache here; root fs is
+      # otherwise read-only.
+      - /app/.next/cache
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  # Cert-only companion: issues/renews the TLS certificate and stores it on
+  # the caddy_data volume. It never serves any real traffic. Uses real ACME
+  # (Let's Encrypt) by default; set CADDYFILE=./Caddyfile.local for local
+  # testing with a self-signed cert (no DNS/internet required).
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    expose:
+      - "80"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to your production hostname, e.g. your-domain.com}
+    volumes:
+      - ${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # Public reverse proxy: terminates TLS using the certificate Caddy obtained,
+  # redirects all plain HTTP to HTTPS, and forwards app traffic to `web`.
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+      - caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to your production hostname, e.g. your-domain.com}
+      # Selects which of Caddy's cert stores nginx looks in (see
+      # nginx/docker-entrypoint.sh) — set by deploy.sh when --local is used.
+      LOCAL_CERT_MODE: ${LOCAL_CERT_MODE:-0}
+    volumes:
+      - ./nginx/app.conf.template:/etc/nginx/templates/app.conf.template:ro
+      - ./nginx/https.conf.template:/etc/nginx/templates/https.conf.template:ro
+      - ./nginx/docker-entrypoint.sh:/entrypoint.sh:ro
+      - caddy_data:/caddy-data:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # Optional: exposes the app via a Cloudflare Tunnel (outbound-only, no
+  # public 80/443 needed). Disabled unless COMPOSE_PROFILES=cloudflare is
+  # set (deploy.sh does this automatically when secrets/cloudflare_tunnel_token
+  # exists). The token is read from a file-based secret, never an env var,
+  # so it never shows up in `docker inspect`/`docker compose config`.
+  # Configure the tunnel's Public Hostname -> Service in the Cloudflare Zero
+  # Trust dashboard to point at http://web:3000 (see RUNNING.md).
+  cloudflared:
+    profiles: ["cloudflare"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      - web
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:2000", "run"]
+    environment:
+      TUNNEL_TOKEN_FILE: /run/secrets/cloudflare_tunnel_token
+    secrets:
+      - cloudflare_tunnel_token
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:2000", "ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  # Optional: ephemeral "quick tunnel" for ad-hoc testing — no token/dashboard
+  # setup needed, but prints a random https://<random>.trycloudflare.com URL
+  # in its logs on every start (`docker compose logs cloudflared-quick`) and
+  # has no persistence/auth. Not for production. Enable with
+  # COMPOSE_PROFILES=cloudflare-quick (deploy.sh --quick-tunnel sets this).
+  cloudflared-quick:
+    profiles: ["cloudflare-quick"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      - web
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:2000", "--url", "http://web:3000"]
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:2000", "ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+secrets:
+  cloudflare_tunnel_token:
+    file: ./secrets/cloudflare_tunnel_token
+  admin_users:
+    file: ./secrets/admin-users.json
+
+volumes:
+  caddy_data:
+  caddy_config:
+  resume_cache:
+

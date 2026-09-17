@@ -1,0 +1,14 @@
+{
+	admin off
+	http_port 80
+	https_port 8443
+	local_certs
+}
+
+# Local testing mode: issues a self-signed cert from Caddy's internal CA
+# instantly (no ACME/internet/DNS required). Browsers/curl will flag it as
+# untrusted — that's expected; use `curl -k` or accept the warning.
+{$DOMAIN} {
+	tls internal
+	respond "ok"
+}
