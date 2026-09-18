@@ -12,7 +12,7 @@ import bcrypt from "bcryptjs";
 import { createPrompter } from "./lib/prompt.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SECRETS_DIR = path.join(__dirname, "..", "secrets");
+const SECRETS_DIR = path.join(__dirname, "..", "..", "secrets");
 const USERS_FILE = path.join(SECRETS_DIR, "admin-users.json");
 
 function loadUsers() {

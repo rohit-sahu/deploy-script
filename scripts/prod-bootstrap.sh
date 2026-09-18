@@ -49,7 +49,7 @@ SSH_PORT="${SSH_PORT:-22}"
 DISABLE_PASSWORD_AUTH="${DISABLE_PASSWORD_AUTH:-yes}"
 
 # Node.js settings
-NODE_MAJOR="${NODE_MAJOR:-20}"
+NODE_MAJOR="${NODE_MAJOR:-24}"  # e.g. 24 for Node.js 24.x
 
 # Docker settings
 DOCKER_COMPOSE_PLUGIN="${DOCKER_COMPOSE_PLUGIN:-true}"
@@ -184,10 +184,18 @@ module_firewall() {
   echo "==> [hardening] Configuring firewall"
   case "$OS_ID" in
     ubuntu|debian)
+      # 1. Install UFW if not present, allow SSH, HTTP, HTTPS, and enable it.
       run apt-get install -y ufw
+      # 2. Reset UFW to default (blocks all inbound, allows outbound)
+      run ufw --force reset
+      run ufw default deny incoming
+      run ufw default allow outgoing
+      # 3. ALWAYS allow SSH first so you don't lock yourself out
       run ufw allow "${SSH_PORT}/tcp"
+      # 4. Allow HTTP and HTTPS for web traffic
       run ufw allow 80/tcp
       run ufw allow 443/tcp
+      # 5. Enable UFW (force yes to avoid interactive prompt)
       run ufw --force enable
       ;;
     amzn)

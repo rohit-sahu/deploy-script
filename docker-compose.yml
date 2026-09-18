@@ -7,6 +7,13 @@ services:
         # Inlined into the JS bundle at build time (see Dockerfile comment) —
         # runtime `environment:` below can't override this after the fact.
         NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://rohitkumar.skytech.in}
+        # Container-internal working directory (rarely needs to change).
+        # Only affects a local `docker compose build` — inert when pulling a
+        # pre-built image, since the Dockerfile isn't invoked in that case.
+        # Every other /app reference below is derived from the same variable
+        # so they can never drift out of sync with the Dockerfile's WORKDIR
+        # (which must match whatever image you're building OR pulling).
+        APP_DIR: ${APP_DIR:-/opt/portfolio}
     # Overridable so a pre-built image (e.g. pushed to ECR) can be pulled and
     # run as-is instead of building on the deploy target — set IMAGE to the
     # registry reference and use deploy.sh --pull instead of a plain build.
@@ -34,11 +41,11 @@ services:
       # Also holds the downloaded profile photo (src/lib/photo-cache.ts) in
       # the same directory, served via /api/profile-photo — the browser
       # never hotlinks external photo URLs (e.g. Google Drive) directly.
-      RESUME_CACHE_FILE: /app/data/resume-cache.json
+      RESUME_CACHE_FILE: ${RESUME_CACHE_FILE:-${APP_DIR:-/opt/portfolio}/data/resume-cache.json}
     secrets:
       - admin_users
     volumes:
-      - resume_cache:/app/data
+      - resume_cache:${APP_DIR:-/opt/portfolio}/data
     env_file:
       # Also carries the server-only secrets for /admin: MONGODB_URI,
       # MONGODB_DB, AUTH_SECRET (see .env.example). These are read at
@@ -59,7 +66,7 @@ services:
       - /tmp
       # Next's image optimizer needs to write its cache here; root fs is
       # otherwise read-only.
-      - /app/.next/cache
+      - ${NEXT_APP_CACHE_DIR:-${APP_DIR:-/opt/portfolio}}/.next/cache
     cap_drop:
       - ALL
     logging:
@@ -227,7 +234,8 @@ secrets:
   cloudflare_tunnel_token:
     file: ./secrets/cloudflare_tunnel_token
   admin_users:
-    file: ./secrets/admin-users.json
+    file: ${ADMIN_USERS_FILE:-./secrets/admin-users.json}
+
 
 volumes:
   caddy_data:

@@ -11,7 +11,7 @@ This document captures for future reference:
 
 ## 1. The Script (Modular: Hardening + Node.js + Docker + Repo Sync)
 
-Save this as `scripts/configureHostMachine/prod-bootstrap.sh` on the EC2 instance. It is organized into independent modules, each toggleable via environment variables, so you can run only what you need.
+Save this as `scripts/prod-bootstrap.sh` on the EC2 instance. It is organized into independent modules, each toggleable via environment variables, so you can run only what you need.
 
 ```bash
 #!/usr/bin/env bash
