@@ -20,7 +20,7 @@ import crypto from "node:crypto";
 import { createPrompter } from "./lib/prompt.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.join(__dirname, "..", "..");
+const ROOT = path.join(__dirname, "..");
 
 const TARGETS = {
   local: {
@@ -119,13 +119,13 @@ async function main() {
   const relFile = path.relative(process.cwd(), file);
 
   const mongoUri = await askLine(
-      `MongoDB URI${existing.MONGODB_URI ? " [keep existing]" : ""}: `
+    `MongoDB URI${existing.MONGODB_URI ? " [keep existing]" : ""}: `
   );
   const mongoDb = await askLine(
-      `MongoDB DB name [${existing.MONGODB_DB || "portfolio"}]: `
+    `MongoDB DB name [${existing.MONGODB_DB || "portfolio"}]: `
   );
   const siteUrl = await askLine(
-      `NEXT_PUBLIC_SITE_URL [${existing.NEXT_PUBLIC_SITE_URL || defaultSiteUrl}]: `
+    `NEXT_PUBLIC_SITE_URL [${existing.NEXT_PUBLIC_SITE_URL || defaultSiteUrl}]: `
   );
   const customEnv = await askCustomEnvVars(askLine);
   closeLineReader();
