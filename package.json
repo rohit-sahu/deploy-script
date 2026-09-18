@@ -6,13 +6,15 @@
     "node": ">=20"
   },
   "scripts": {
-    "admin:create": "node node-scripts/create-admin.mjs",
-    "env:create": "node node-scripts/create-env.mjs",
-    "tunnel:token": "node node-scripts/create-cloudflare-tunnel-token.mjs",
+    "admin:create": "node dist/create-admin.mjs",
+    "env:create": "node dist/create-env.mjs",
+    "tunnel:token": "node dist/create-cloudflare-tunnel-token.mjs",
+    "ec2:send": "node dist/send-to-ec2.mjs",
+    "ec2:get": "node dist/get-from-ec2.mjs",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
-    "build": "npm install && node scripts/build.mjs && rm -rf node_modules",
-    "build:dev": "npm install && node scripts/build.mjs --dev"
+    "build": "npm install && node scripts/node/build.mjs && rm -rf node_modules",
+    "build:dev": "npm install && node scripts/node/build.mjs --dev"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3"

@@ -44,7 +44,7 @@ INSTALL_DOCKER="${INSTALL_DOCKER:-true}"
 SYNC_REPO="${SYNC_REPO:-true}"
 
 # Common / security settings
-APP_USER="${APP_USER:-nodeapp}"
+APP_USER="${APP_USER:-portfolio}"
 SSH_PORT="${SSH_PORT:-22}"
 DISABLE_PASSWORD_AUTH="${DISABLE_PASSWORD_AUTH:-yes}"
 
@@ -58,10 +58,12 @@ DOCKER_LOG_MAX_SIZE="${DOCKER_LOG_MAX_SIZE:-10m}"
 DOCKER_LOG_MAX_FILE="${DOCKER_LOG_MAX_FILE:-3}"
 
 # GitHub repo sync settings
-REPO_URL="${REPO_URL:-}"                       # e.g. git@github.com:org/app.git or https://github.com/org/app.git
+GIT_BASE_URL="${GIT_BASE_URL:-https://github.com}"                       # e.g. https://github.com or
+REPO_NAME="${REPO_NAME:-portfolio}"                       # e.g. org/app or just app (if org is same as GITHUB_USERNAME)
+REPO_URL="${GIT_BASE_URL}/${REPO_NAME}"                       # e.g. git@github.com:org/app.git or https://github.com/org/app.git
 REPO_BRANCH="${REPO_BRANCH:-main}"
-REPO_DEST="${REPO_DEST:-/opt/${APP_USER}/app}"
-REPO_DEPLOY_KEY="${REPO_DEPLOY_KEY:-}"          # path to an SSH deploy key file, optional
+REPO_DEST="${REPO_DEST:-/opt/${APP_USER}}"  # where to clone the repo on the host
+REPO_DEPLOY_KEY="${REPO_DEPLOY_KEY:-/home/ubuntu/.ssh/id_ed25519}"          # path to an SSH deploy key file, optional
 
 echo "[INFO] Starting production bootstrap at $(date -u)"
 echo "[INFO] DRY_RUN=${DRY_RUN} | HARDENING=${INSTALL_COMMON_HARDENING} | NODE=${INSTALL_NODE} | DOCKER=${INSTALL_DOCKER} | SYNC_REPO=${SYNC_REPO}"
@@ -165,7 +167,7 @@ module_secure_ssh() {
   if grep -q '^#\?Port ' "$sshd_config"; then
     run sed -i "s/^#\?Port .*/Port ${SSH_PORT}/" "$sshd_config"
   else
-    echo "Port ${SSH_PORT}" >> "$sshd_config"
+    run bash -c "echo 'Port ${SSH_PORT}' >> '${sshd_config}'"
   fi
 
   if sshd -t; then
@@ -207,7 +209,8 @@ module_fail2ban() {
 
 module_sysctl_hardening() {
   echo "==> [hardening] Applying kernel/network hardening"
-  cat >/etc/sysctl.d/99-production-hardening.conf <<'EOF'
+  local sysctl_conf
+  sysctl_conf="$(cat <<'EOF'
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.rp_filter = 1
 net.ipv4.conf.default.rp_filter = 1
@@ -215,6 +218,8 @@ net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 kernel.randomize_va_space = 2
 EOF
+)"
+  write_file /etc/sysctl.d/99-production-hardening.conf "$sysctl_conf"
   run sysctl --system
 }
 
@@ -378,6 +383,45 @@ EOF
   fi
 }
 
+# Amazon Linux 2's `amazon-linux-extras install docker` has no
+# docker-compose-plugin package in its repos, unlike every other OS branch
+# here (which installs docker-compose-plugin via apt/dnf). Without this,
+# `docker compose` silently doesn't exist on AL2, breaking anything (e.g.
+# deploy.sh) that relies on it. Install the official plugin binary straight
+# from Docker's GitHub releases instead. Idempotent: skips if already present.
+install_compose_plugin_al2() {
+  local plugin_dir="/usr/libexec/docker/cli-plugins"
+  local plugin_path="${plugin_dir}/docker-compose"
+
+  if [[ -x "$plugin_path" ]] || command -v docker-compose >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    echo "[INFO] docker compose plugin already present. Skipping."
+    return 0
+  fi
+
+  echo "==> [docker] Installing docker-compose-plugin binary for Amazon Linux 2"
+  local arch compose_arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64) compose_arch="x86_64" ;;
+    aarch64|arm64) compose_arch="aarch64" ;;
+    *)
+      echo "[WARN] Unsupported architecture '$arch' for docker-compose-plugin binary. Skipping."
+      return 1
+      ;;
+  esac
+
+  local compose_version="v2.29.7"
+  local url="https://github.com/docker/compose/releases/download/${compose_version}/docker-compose-linux-${compose_arch}"
+
+  run mkdir -p "$plugin_dir"
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo "[DRY-RUN] would download $url to $plugin_path and chmod +x"
+    return 0
+  fi
+  curl -fsSL "$url" -o "$plugin_path"
+  chmod +x "$plugin_path"
+}
+
 run_install_docker() {
   echo "==> [docker] Installing Docker Engine"
   if command -v docker >/dev/null 2>&1; then
@@ -422,6 +466,10 @@ run_install_docker() {
         run apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
         ;;
     esac
+  fi
+
+  if [[ "$OS_ID" == "amzn" && "$OS_VERSION" == "2" && "$DOCKER_COMPOSE_PLUGIN" == "true" ]]; then
+    install_compose_plugin_al2
   fi
 
   run systemctl enable --now docker

@@ -183,9 +183,47 @@ npm run admin:create
 
 To remove an admin, edit `secrets/admin-users.json` directly and delete their entry.
 
+## Sending a file to an EC2 instance
+
+`npm run ec2:send` prompts interactively for a local file, the EC2 connection (`user@host`, optional `.pem` key path), and the remote destination path, then transfers it via `scp`. Useful for e.g. copying `.env.prod` to the server as `.env.local` (see [Deploy to production](#deploy-to-production)), or sending a one-off file without remembering the full `scp`/`ssh -i` invocation.
+
+```bash
+npm run ec2:send
+```
+```
+Local file to send: .env.prod
+EC2 host (user@ec2-host-or-ip, e.g. ec2-user@1.2.3.4): ubuntu@your-domain.com
+Path to SSH private key (.pem) [leave blank to use default SSH agent/keys]: ~/.ssh/my-ec2-key.pem
+Remote destination path [~/.env.prod]: /path/to/app/.env.local
+```
+
+Refuses to overwrite an existing remote file by default — pass `--force` to allow it:
+```bash
+npm run ec2:send -- --force
+```
+
+## Downloading a file from an EC2 instance
+
+`npm run ec2:get` is the reverse: prompts for the EC2 connection, the remote file to fetch, and a local destination path, then pulls it via `scp`. Useful for grabbing logs, a remote `.env`, or any other file off the server without remembering the `scp`/`ssh -i` invocation.
+
+```bash
+npm run ec2:get
+```
+```
+EC2 host (user@ec2-host-or-ip, e.g. ec2-user@1.2.3.4): ubuntu@your-domain.com
+Path to SSH private key (.pem) [leave blank to use default SSH agent/keys]: ~/.ssh/my-ec2-key.pem
+Remote file to download: /path/to/app/logs/app.log
+Local destination path [app.log]: ./app.log
+```
+
+Fails fast if the remote file doesn't exist, and — like `ec2:send` — refuses to overwrite an existing local file by default:
+```bash
+npm run ec2:get -- --force
+```
+
 ## Building the CLI scripts (admin:create / env:create / tunnel:token)
 
-`scripts/build.mjs` (esbuild) bundles + minifies `create-admin.mjs`, `create-env.mjs`, and `create-cloudflare-tunnel-token.mjs` — plus `bcryptjs` and `scripts/lib/prompt.mjs` — into self-contained files under `dist/`. Only Node built-ins (`node:fs`, etc.) stay external, so the built files need no `node_modules` at runtime.
+`scripts/node/build.mjs` (esbuild) bundles + minifies `create-admin.mjs`, `create-env.mjs`, and `create-cloudflare-tunnel-token.mjs` — plus `bcryptjs` and `scripts/node/lib/prompt.mjs` — into self-contained files under `dist/`. Only Node built-ins (`node:fs`, etc.) stay external, so the built files need no `node_modules` at runtime.
 
 **Production build** (minified, no sourcemaps, cleans `dist/` first):
 ```bash
@@ -207,7 +245,7 @@ node dist/create-cloudflare-tunnel-token.mjs
 ```bash
 npm run build:dev
 ```
-Leave it running in a terminal while editing `scripts/*.mjs` — output stays readable for debugging. Stop with `Ctrl+C`.
+Leave it running in a terminal while editing `scripts/node/*.mjs` — output stays readable for debugging. Stop with `Ctrl+C`.
 
 `dist/` is git-ignored — it's a build artifact, not source. There's no need to run `npm run build` for everyday `npm run admin:create` / `npm run env:create` / `npm run tunnel:token` usage; those already run straight from source via `node scripts/...`. Building is only useful when you want to ship/execute these scripts on a machine without `node_modules` installed.
 

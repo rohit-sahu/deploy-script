@@ -30,6 +30,13 @@ export function createPrompter() {
       process.stdout.write(line + "\n");
       return Promise.resolve(line);
     }
+    // askHidden() requires closeLineReader() to have been called first (see
+    // below), so a caller that needs askLine() again afterward (e.g. to loop
+    // "add another?" after a hidden password prompt) would otherwise find rl
+    // permanently null. Lazily reopen it here instead.
+    if (!rl) {
+      rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    }
     return new Promise((resolve) => {
       rl.question(promptText, (answer) => resolve(answer.trim()));
     });

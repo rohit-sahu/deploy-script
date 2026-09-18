@@ -74,6 +74,33 @@ function writeEnvFile(file, values) {
   fs.chmodSync(file, 0o600);
 }
 
+// Repeatedly prompts "Add another env variable? [y/N]" then a KEY=VALUE
+// entry, looping until the user declines. Returns an object of collected
+// entries; keys can duplicate/override any of the predefined ones above.
+async function askCustomEnvVars(askLine) {
+  const custom = {};
+  while (true) {
+    const more = (await askLine("Add another env variable? [y/N]: ")).toLowerCase();
+    if (more !== "y" && more !== "yes") break;
+
+    const entry = await askLine("Enter as KEY=VALUE: ");
+    const idx = entry.indexOf("=");
+    if (idx <= 0) {
+      console.warn(`Invalid format "${entry}" — expected KEY=VALUE. Try again.`);
+      continue;
+    }
+    const key = entry.slice(0, idx).trim();
+    const value = entry.slice(idx + 1).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      console.warn(`Invalid key "${key}" — must start with a letter/underscore and contain only letters, digits, underscores. Try again.`);
+      continue;
+    }
+    custom[key] = value;
+    console.log(`==> Will set ${key}=${value || "(empty)"}`);
+  }
+  return custom;
+}
+
 async function main() {
   const { askLine, closeLineReader } = createPrompter();
 
@@ -100,6 +127,7 @@ async function main() {
   const siteUrl = await askLine(
     `NEXT_PUBLIC_SITE_URL [${existing.NEXT_PUBLIC_SITE_URL || defaultSiteUrl}]: `
   );
+  const customEnv = await askCustomEnvVars(askLine);
   closeLineReader();
 
   const authSecret = existing.AUTH_SECRET || generateAuthSecret();
@@ -116,6 +144,7 @@ async function main() {
     AUTH_SECRET: authSecret,
     ADMIN_USERS_FILE: existing.ADMIN_USERS_FILE || "",
     RESUME_CACHE_FILE: existing.RESUME_CACHE_FILE || "",
+    ...customEnv,
   };
 
   fs.mkdirSync(path.dirname(file), { recursive: true });
