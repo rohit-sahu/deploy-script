@@ -318,6 +318,41 @@ if [ "$PULL" -eq 1 ] || [ "$PUSH" -eq 1 ]; then
 		exit 1
 	fi
 	export IMAGE
+
+	# Registry host is everything before the first "/" in the image ref
+	# (e.g. "ghcr.io" out of "ghcr.io/<owner>/rohit-portfolio:latest").
+	registry="${IMAGE%%/*}"
+	# Optional convenience auto-login: CLI flag -> env var -> .env file ->
+	# (only if NOT already logged in to this registry) interactive prompt
+	# -> skip login silently. The subsequent pull/push will then fail with
+	# its own clear auth error if login actually was required. Applies to
+	# --pull too (not just --push): a private registry image needs auth to
+	# be pulled just as much as to be pushed.
+	GHCR_USER="${GHCR_USER_ARG:-${GHCR_USER:-$(env_file_var GHCR_USER)}}"
+	GHCR_TOKEN="${GHCR_TOKEN_ARG:-${GHCR_TOKEN:-$(env_file_var GHCR_TOKEN)}}"
+
+	# Best-effort check: does docker's config already have an auth entry
+	# for this registry? (covers a prior `docker login`, a credential
+	# helper, or CI runners that pre-authenticate.) Not 100% conclusive,
+	# but enough to avoid nagging when login isn't actually needed.
+	already_logged_in() {
+		local cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+		[ -f "$cfg" ] && grep -q "\"$1\"" "$cfg" 2>/dev/null
+	}
+
+	if { [ -z "${GHCR_USER:-}" ] || [ -z "${GHCR_TOKEN:-}" ]; } && ! already_logged_in "$registry" && [ -t 0 ]; then
+		echo "==> Not logged in to ${registry} yet."
+		[ -z "${GHCR_USER:-}" ] && read -p "Registry username (leave blank to skip login): " GHCR_USER
+		if [ -n "${GHCR_USER:-}" ] && [ -z "${GHCR_TOKEN:-}" ]; then
+			read -s -p "Registry token/password: " GHCR_TOKEN
+			echo ""
+		fi
+	fi
+
+	if [ -n "${GHCR_USER:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
+		echo "==> Logging in to ${registry}..."
+		echo "$GHCR_TOKEN" | docker login "$registry" -u "$GHCR_USER" --password-stdin
+	fi
 fi
 
 set_env_var DOMAIN "$DOMAIN"
@@ -345,38 +380,6 @@ else
 	docker compose build
 
 	if [ "$PUSH" -eq 1 ]; then
-		# Registry host is everything before the first "/" in the image ref
-		# (e.g. "ghcr.io" out of "ghcr.io/<owner>/rohit-portfolio:latest").
-		registry="${IMAGE%%/*}"
-		# Optional convenience auto-login: CLI flag -> env var -> .env file ->
-		# (only if NOT already logged in to this registry) interactive prompt
-		# -> skip login silently. `docker compose push` will then fail with
-		# its own clear auth error if login actually was required.
-		GHCR_USER="${GHCR_USER_ARG:-${GHCR_USER:-$(env_file_var GHCR_USER)}}"
-		GHCR_TOKEN="${GHCR_TOKEN_ARG:-${GHCR_TOKEN:-$(env_file_var GHCR_TOKEN)}}"
-
-		# Best-effort check: does docker's config already have an auth entry
-		# for this registry? (covers a prior `docker login`, a credential
-		# helper, or CI runners that pre-authenticate.) Not 100% conclusive,
-		# but enough to avoid nagging when login isn't actually needed.
-		already_logged_in() {
-			local cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
-			[ -f "$cfg" ] && grep -q "\"$1\"" "$cfg" 2>/dev/null
-		}
-
-		if { [ -z "${GHCR_USER:-}" ] || [ -z "${GHCR_TOKEN:-}" ]; } && ! already_logged_in "$registry" && [ -t 0 ]; then
-			echo "==> Not logged in to ${registry} yet."
-			[ -z "${GHCR_USER:-}" ] && read -p "Registry username (leave blank to skip login): " GHCR_USER
-			if [ -n "${GHCR_USER:-}" ] && [ -z "${GHCR_TOKEN:-}" ]; then
-				read -s -p "Registry token/password: " GHCR_TOKEN
-				echo ""
-			fi
-		fi
-
-		if [ -n "${GHCR_USER:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
-			echo "==> Logging in to ${registry}..."
-			echo "$GHCR_TOKEN" | docker login "$registry" -u "$GHCR_USER" --password-stdin
-		fi
 		echo "==> Pushing image: ${IMAGE}..."
 		docker compose push web
 
