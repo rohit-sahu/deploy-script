@@ -121,10 +121,15 @@ if ! command -v npm >/dev/null 2>&1; then
   echo "npm is required but not found. Install npm first: https://www.npmjs.com/get-npm" >&2
   exit 1
 fi
-# Install Node.js dependencies if package.json exists
+# Build the CLI scripts (dist/*.mjs) if package.json exists. 'npm run build'
+# already runs its own 'npm install' first and removes node_modules at the
+# end (see package.json) — the resulting dist/*.mjs bundles are
+# self-contained (no node_modules needed at runtime). This step is required
+# before any of the npm run env:create/admin:create/tunnel:token calls below,
+# since dist/ is gitignored and doesn't exist on a fresh clone.
 if [ -f "package.json" ]; then
-  echo "Installing Node.js dependencies..."
-  npm install
+  echo "Installing Node.js dependencies.. and Building CLI scripts (dist/*.mjs)..."
+  npm run build
 fi
 
 LOCAL=0
