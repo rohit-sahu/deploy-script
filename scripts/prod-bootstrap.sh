@@ -72,6 +72,13 @@ echo "[INFO] DRY_RUN=${DRY_RUN} | HARDENING=${INSTALL_COMMON_HARDENING} | NODE=$
 run() {
   if [[ "$DRY_RUN" == "true" ]]; then
     echo "[DRY-RUN] $*"
+    # Drain any piped stdin (e.g. `curl ... | run bash -`) so the upstream
+    # writer doesn't get SIGPIPE/"Failed writing body" when we don't
+    # actually consume it — that would fail the pipeline under `pipefail`
+    # and abort the whole script even in a dry run.
+    if [[ ! -t 0 ]]; then
+      cat >/dev/null
+    fi
   else
     "$@"
   fi
