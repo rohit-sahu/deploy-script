@@ -225,6 +225,24 @@ net.ipv4.conf.default.rp_filter = 1
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.all.send_redirects = 0
 kernel.randomize_va_space = 2
+
+# --- Recommended Security Additions ---
+# Ignore source-routed packets (prevents traffic routing manipulation)
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+
+# Ignore secure ICMP redirects (prevents rogue router impersonation)
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+
+# Ignore all ICMP echoes/broadcasts to avoid network discovery/mapping
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+
+# --- IPv6 Hardening (Highly recommended if IPv6 is enabled in your VPC) ---
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.default.accept_source_route = 0
 EOF
 )"
   write_file /etc/sysctl.d/99-production-hardening.conf "$sysctl_conf"
