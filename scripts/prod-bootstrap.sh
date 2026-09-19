@@ -641,15 +641,21 @@ run_sync_repo() {
 
   run mkdir -p "$(dirname "$REPO_DEST")"
 
+  # Root (running this whole script) doesn't own $REPO_DEST once it's chowned
+  # to $APP_USER by a prior run — git refuses to operate on a repo owned by a
+  # different user ("dubious ownership") unless explicitly marked safe. Pass
+  # it inline per-invocation rather than mutating root's global .gitconfig.
+  local git_safe_dir=(-c "safe.directory=${REPO_DEST}")
+
   if [[ -d "${REPO_DEST}/.git" ]]; then
     echo "[INFO] Repo already cloned. Fetching latest changes."
     if [[ -n "$git_ssh_command" ]]; then
-      GIT_SSH_COMMAND="$git_ssh_command" run git -C "$REPO_DEST" fetch origin "$REPO_BRANCH"
+      GIT_SSH_COMMAND="$git_ssh_command" run git "${git_safe_dir[@]}" -C "$REPO_DEST" fetch origin "$REPO_BRANCH"
     else
-      run git -C "$REPO_DEST" fetch origin "$REPO_BRANCH"
+      run git "${git_safe_dir[@]}" -C "$REPO_DEST" fetch origin "$REPO_BRANCH"
     fi
-    run git -C "$REPO_DEST" checkout "$REPO_BRANCH"
-    run git -C "$REPO_DEST" reset --hard "origin/${REPO_BRANCH}"
+    run git "${git_safe_dir[@]}" -C "$REPO_DEST" checkout "$REPO_BRANCH"
+    run git "${git_safe_dir[@]}" -C "$REPO_DEST" reset --hard "origin/${REPO_BRANCH}"
   else
     echo "[INFO] Cloning repo for the first time."
     if [[ -n "$git_ssh_command" ]]; then
@@ -666,7 +672,7 @@ run_sync_repo() {
   fi
 
   echo "[INFO] Repo synced at: $REPO_DEST"
-  git -C "$REPO_DEST" log -1 --oneline || true
+  git "${git_safe_dir[@]}" -C "$REPO_DEST" log -1 --oneline || true
 }
 
 ###############################################################################
