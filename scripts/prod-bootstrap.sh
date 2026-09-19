@@ -93,14 +93,22 @@ write_file() {
 # OS detection (shared by all modules)
 ###############################################################################
 detect_os() {
+  echo "==> [system] Identifying host operating system"
+
   if [[ -f /etc/os-release ]]; then
-    . /etc/os-release
-    OS_ID="${ID:-unknown}"
-    OS_VERSION="${VERSION_ID:-unknown}"
+    # Parse specific lines directly (not sourcing the file) to avoid executing
+    # arbitrary shell code and to prevent polluting the global shell namespace
+    # with every field in the file (NAME, PRETTY_NAME, VERSION_CODENAME, etc.).
+    OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+    OS_VERSION=$(grep -E '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
+
+    OS_ID="${OS_ID:-unknown}"
+    OS_VERSION="${OS_VERSION:-unknown}"
   else
-    echo "[ERROR] Cannot detect OS"
+    echo "[ERROR] Mandatory /etc/os-release file not found. Cannot determine distribution."
     exit 1
   fi
+
   echo "[INFO] Detected OS: $OS_ID $OS_VERSION"
 }
 
@@ -121,7 +129,8 @@ module_common_setup() {
       ;;
     ubuntu|debian)
       run apt-get update -y
-      DEBIAN_FRONTEND=noninteractive run apt-get upgrade -y
+      DEBIAN_FRONTEND=noninteractive run apt-get upgrade -y \
+        -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
       run apt-get install -y curl git unzip tar ca-certificates gnupg lsb-release
       ;;
     *)
@@ -132,12 +141,14 @@ module_common_setup() {
 }
 
 module_create_app_user() {
-  echo "==> [common_setup] Ensuring app user exists"
+  echo "==> [common_setup] Ensuring app user exists: $APP_USER"
   if ! id "$APP_USER" >/dev/null 2>&1; then
-    run useradd --create-home --shell /bin/bash "$APP_USER"
-    echo "[INFO] Created user: $APP_USER"
+    run useradd --system --create-home --shell /bin/bash "$APP_USER"
+    run passwd -l "$APP_USER" >/dev/null 2>&1 || true
+    echo "[INFO] Created system user: $APP_USER"
   else
-    echo "[INFO] User already exists: $APP_USER"
+    echo "[INFO] User already exists: $APP_USER. Enforcing safe configuration."
+    run usermod --shell /bin/bash "$APP_USER"
   fi
 }
 
@@ -207,12 +218,42 @@ module_firewall() {
 module_fail2ban() {
   echo "==> [hardening] Enabling fail2ban"
   case "$OS_ID" in
-    ubuntu|debian) run apt-get install -y fail2ban ;;
+    ubuntu|debian)
+      run apt-get update -y
+      run apt-get install -y fail2ban
+      ;;
     amzn)
-      if [[ "$OS_VERSION" == "2" ]]; then run yum install -y fail2ban; else run dnf install -y fail2ban; fi
+      if [[ "$OS_VERSION" == "2" ]]; then
+        echo "--> Enabling EPEL repository for Amazon Linux 2"
+        run amazon-linux-extras install epel -y
+        run yum install -y fail2ban
+      else
+        run dnf install -y fail2ban
+      fi
+      ;;
+    *)
+      echo "[WARN] Unsupported OS_ID: $OS_ID. Skipping fail2ban."
+      return 0
       ;;
   esac
-  systemctl enable --now fail2ban || true
+
+  echo "--> Injecting default local SSH jail configuration"
+  local jail_conf
+  jail_conf="$(cat <<EOF
+[sshd]
+enabled = true
+port = ${SSH_PORT}
+filter = sshd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+backend = systemd
+EOF
+)"
+  write_file /etc/fail2ban/jail.local "$jail_conf"
+
+  run systemctl enable fail2ban
+  run systemctl restart fail2ban
 }
 
 module_sysctl_hardening() {
@@ -287,10 +328,16 @@ run_install_node() {
         curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | run bash -
         run apt-get install -y nodejs
         ;;
+      *)
+        echo "--> [Warning] Unsupported OS_ID: $OS_ID. Skipping Node.js installation."
+        return 0
+        ;;
     esac
   fi
-
+  # Global installations may need root privileges depending on your execution context
   run npm install -g pm2
+  # Output details safely for logging verification
+  echo "--> Verification details:"
   node -v || true
   npm -v || true
   pm2 -v || true
@@ -304,23 +351,50 @@ run_install_node() {
 # with Docker's official docker-ce packages — but ONLY if any are actually
 # installed. Safe/idempotent: does nothing on a clean instance.
 purge_conflicting_docker_packages() {
-  local conflicting_pkgs=("docker.io" "docker-doc" "docker-compose" "docker-compose-v2" "podman-docker" "containerd" "runc")
-  local found_pkgs=()
-
-  local pkg
-  for pkg in "${conflicting_pkgs[@]}"; do
-    if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
-      found_pkgs+=("$pkg")
-    fi
-  done
-
-  if [[ ${#found_pkgs[@]} -eq 0 ]]; then
-    echo "[INFO] No conflicting Docker/Podman/containerd/runc packages found. Skipping purge."
-    return 0
-  fi
-
-  echo "[WARN] Found conflicting packages: ${found_pkgs[*]}. Purging before installing docker-ce."
-  run apt-get purge -y "${found_pkgs[@]}"
+  echo "==> [docker] Checking for conflicting container packages"
+  case "$OS_ID" in
+    ubuntu|debian)
+      local conflicting_pkgs=("docker.io" "docker-doc" "docker-compose" "docker-compose-v2" "podman-docker" "containerd" "runc")
+      local found_pkgs=()
+      local pkg
+      for pkg in "${conflicting_pkgs[@]}"; do
+        if dpkg -l "$pkg" 2>/dev/null | grep -q '^ii'; then
+          found_pkgs+=("$pkg")
+        fi
+      done
+      if [[ ${#found_pkgs[@]} -eq 0 ]]; then
+        echo "[INFO] No conflicting Debian/Ubuntu container packages found."
+      else
+        echo "[WARN] Found conflicting Debian packages: ${found_pkgs[*]}. Purging..."
+        run apt-get purge -y "${found_pkgs[@]}"
+        run apt-get autoremove -y
+      fi
+      ;;
+    amzn)
+      local conflicting_rpm_pkgs=("docker" "docker-client" "docker-client-latest" "docker-common" "docker-latest" "docker-latest-logrotate" "docker-logrotate" "docker-engine" "podman" "buildah")
+      local found_rpm_pkgs=()
+      local rpm_pkg
+      for rpm_pkg in "${conflicting_rpm_pkgs[@]}"; do
+        if rpm -q "$rpm_pkg" >/dev/null 2>&1; then
+          found_rpm_pkgs+=("$rpm_pkg")
+        fi
+      done
+      if [[ ${#found_rpm_pkgs[@]} -eq 0 ]]; then
+        echo "[INFO] No conflicting Amazon Linux container packages found."
+      else
+        echo "[WARN] Found conflicting RPM packages: ${found_rpm_pkgs[*]}. Removing..."
+        if [[ "$OS_VERSION" == "2" ]]; then
+          run yum remove -y "${found_rpm_pkgs[@]}"
+        else
+          run dnf remove -y "${found_rpm_pkgs[@]}"
+        fi
+      fi
+      ;;
+    *)
+      echo "[WARN] Unsupported OS_ID: $OS_ID. Skipping docker purge check."
+      return 0
+      ;;
+  esac
 }
 
 # Returns success (0) if this system's apt/gpg toolchain supports ASCII-
@@ -507,6 +581,7 @@ run_install_docker() {
   fi
 
   # Let the app user run docker without sudo
+  # Ensure the app user can run containers, if the docker group already exists
   if id "$APP_USER" >/dev/null 2>&1; then
     run usermod -aG docker "$APP_USER"
     echo "[INFO] Added $APP_USER to the docker group (re-login required for it to take effect)."
@@ -536,7 +611,7 @@ run_sync_repo() {
       echo "[ERROR] REPO_DEPLOY_KEY set to '$REPO_DEPLOY_KEY' but file not found."
       return 1
     fi
-    chmod 600 "$REPO_DEPLOY_KEY"
+    run chmod 600 "$REPO_DEPLOY_KEY"
     git_ssh_command="ssh -i ${REPO_DEPLOY_KEY} -o StrictHostKeyChecking=accept-new"
   fi
 
