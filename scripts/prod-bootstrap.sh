@@ -59,8 +59,9 @@ DOCKER_LOG_MAX_FILE="${DOCKER_LOG_MAX_FILE:-3}"
 
 # GitHub repo sync settings
 GIT_BASE_URL="${GIT_BASE_URL:-https://github.com}"                       # e.g. https://github.com or
+GITHUB_USERNAME="${GITHUB_USERNAME:-rohit-sahu}"  # e.g. org or your GitHub username
 REPO_NAME="${REPO_NAME:-deploy-script}"                       # e.g. org/app or just app (if org is same as GITHUB_USERNAME)
-REPO_URL="${GIT_BASE_URL}/${REPO_NAME}"                       # e.g. git@github.com:org/app.git or https://github.com/org/app.git
+REPO_URL="${GIT_BASE_URL}/${GITHUB_USERNAME}/${REPO_NAME}"                       # e.g. git@github.com:org/app.git or https://github.com/org/app.git
 REPO_BRANCH="${REPO_BRANCH:-main}"
 REPO_DEST="${REPO_DEST:-/opt/${APP_USER}}"  # where to clone the repo on the host
 REPO_DEPLOY_KEY="${REPO_DEPLOY_KEY:-/home/ubuntu/.ssh/id_ed25519}"          # path to an SSH deploy key file, optional
@@ -179,6 +180,16 @@ module_secure_ssh() {
     run sed -i "s/^#\?Port .*/Port ${SSH_PORT}/" "$sshd_config"
   else
     run bash -c "echo 'Port ${SSH_PORT}' >> '${sshd_config}'"
+  fi
+
+  # If ufw is already active (e.g. re-running this script after changing
+  # SSH_PORT), pre-allow the new port before restarting sshd. Otherwise
+  # there's a window where sshd is listening on the new port but ufw (still
+  # holding only the old port's allow rule from a previous run) would block
+  # new connections until module_firewall runs afterward.
+  if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+    echo "[INFO] ufw is active — pre-allowing new SSH port ${SSH_PORT}/tcp before restart."
+    run ufw allow "${SSH_PORT}/tcp"
   fi
 
   if sshd -t; then
@@ -404,13 +415,18 @@ purge_conflicting_docker_packages() {
 # binary keyring. Detecting via the actual apt version (rather than a
 # hardcoded codename list) keeps this working on future releases too.
 apt_supports_asc_signed_by() {
-  local apt_version
+  local apt_version major minor
   apt_version="$(apt-get --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
   if [[ -z "$apt_version" ]]; then
     # Version couldn't be determined — fall back to the safer/older method.
     return 1
   fi
-  awk -v v="$apt_version" 'BEGIN { exit !(v >= 2.4) }'
+  # Compare major/minor as separate integers rather than a single float —
+  # awk (and any float-based comparison) would misparse e.g. "2.10" as the
+  # number 2.1, incorrectly treating it as older than 2.4.
+  major="${apt_version%%.*}"
+  minor="${apt_version#*.}"
+  (( major > 2 || (major == 2 && minor >= 4) ))
 }
 
 # Configures /etc/docker/daemon.json with production-sensible defaults:
@@ -580,9 +596,10 @@ run_install_docker() {
     echo "[INFO] Skipping Docker daemon configuration (CONFIGURE_DOCKER_DAEMON=false)"
   fi
 
-  # Let the app user run docker without sudo
-  # Ensure the app user can run containers, if the docker group already exists
-  if id "$APP_USER" >/dev/null 2>&1; then
+  # Let the app user run docker without sudo. Also proceed under DRY_RUN even
+  # though the user may not really exist yet (its creation was only echoed by
+  # module_create_app_user), so the dry-run preview still shows this step.
+  if id "$APP_USER" >/dev/null 2>&1 || [[ "$DRY_RUN" == "true" ]]; then
     run usermod -aG docker "$APP_USER"
     echo "[INFO] Added $APP_USER to the docker group (re-login required for it to take effect)."
   fi
@@ -635,7 +652,9 @@ run_sync_repo() {
     fi
   fi
 
-  if id "$APP_USER" >/dev/null 2>&1; then
+  # Same DRY_RUN accommodation as above: proceed even if the user doesn't
+  # really exist yet under a dry run, so this step is still previewed.
+  if id "$APP_USER" >/dev/null 2>&1 || [[ "$DRY_RUN" == "true" ]]; then
     run chown -R "${APP_USER}:${APP_USER}" "$REPO_DEST"
   fi
 
