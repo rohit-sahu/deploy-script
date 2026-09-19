@@ -59,7 +59,7 @@ DOCKER_LOG_MAX_FILE="${DOCKER_LOG_MAX_FILE:-3}"
 
 # GitHub repo sync settings
 GIT_BASE_URL="${GIT_BASE_URL:-https://github.com}"                       # e.g. https://github.com or
-REPO_NAME="${REPO_NAME:-portfolio}"                       # e.g. org/app or just app (if org is same as GITHUB_USERNAME)
+REPO_NAME="${REPO_NAME:-deploy-script}"                       # e.g. org/app or just app (if org is same as GITHUB_USERNAME)
 REPO_URL="${GIT_BASE_URL}/${REPO_NAME}"                       # e.g. git@github.com:org/app.git or https://github.com/org/app.git
 REPO_BRANCH="${REPO_BRANCH:-main}"
 REPO_DEST="${REPO_DEST:-/opt/${APP_USER}}"  # where to clone the repo on the host
