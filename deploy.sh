@@ -40,6 +40,7 @@ Options (CLI flag | source key | default):
   --push                        | (boolean flag)                | off
   (with --pull/--push) IMAGE via | IMAGE (in ${ENV_FILE})        | (none — required)
   --multi-arch / --no-multi-arch (with --push) | MULTI_ARCH (in ${ENV_FILE}) | off (prompted if interactive)
+  --platforms LIST (with --push --multi-arch) | PLATFORMS (in ${ENV_FILE}) | linux/amd64,linux/arm64
   --ghcr-user USER (with --push, optional) | GHCR_USER          | (none — see below)
   --ghcr-token TOKEN (with --push, optional) | GHCR_TOKEN       | (none — see below)
   --env-file PATH               | ENV_FILE_PATH                 | .env.local
@@ -111,6 +112,12 @@ entirely with --no-up.
   IMAGE=ghcr.io/<owner>/rohit-portfolio:latest $0 --push --multi-arch
   $0 --push --no-multi-arch   # force native single-arch push instead
 
+Customize which platforms --multi-arch builds for via --platforms (comma-
+separated, forwarded as-is to buildx/build-deploy.sh's PLATFORMS). Defaults
+to linux/amd64,linux/arm64 if unset -- add more (e.g. linux/arm/v7) or
+narrow it down without editing any script:
+  $0 --push --multi-arch --platforms linux/amd64,linux/arm64,linux/arm/v7
+
 --pull and --push are mutually exclusive. Neither flag = build and run
 locally only, no registry involved.
 
@@ -156,6 +163,7 @@ GHCR_USER_ARG=""
 GHCR_TOKEN_ARG=""
 APP_DIR_ARG=""
 MULTI_ARCH_ARG=""
+PLATFORMS_ARG=""
 args=()
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -167,6 +175,8 @@ while [ $# -gt 0 ]; do
 		--multi-arch) MULTI_ARCH_ARG="1"; shift ;;
 		--multi-arch=*) MULTI_ARCH_ARG="${1#*=}"; shift ;;
 		--no-multi-arch) MULTI_ARCH_ARG="0"; shift ;;
+		--platforms) PLATFORMS_ARG="${2:-}"; shift 2 ;;
+		--platforms=*) PLATFORMS_ARG="${1#*=}"; shift ;;
 		--no-up) NO_UP=1; shift ;;
 		--env-file) ENV_FILE_ARG="${2:-}"; shift 2 ;;
 		--env-file=*) ENV_FILE_ARG="${1#*=}"; shift ;;
@@ -387,7 +397,19 @@ if [ "$PULL" -eq 1 ] || [ "$PUSH" -eq 1 ]; then
       *) MULTI_ARCH=0 ;;
     esac
     set_env_var MULTI_ARCH "$MULTI_ARCH"
-    echo "==> Multi-arch build: $([ "$MULTI_ARCH" -eq 1 ] && echo "on (linux/amd64+arm64)" || echo "off (native only)")"
+    echo "==> Multi-arch build: $([ "$MULTI_ARCH" -eq 1 ] && echo "on" || echo "off (native only)")"
+
+    # Which platforms to actually build for -- only meaningful when
+    # MULTI_ARCH=1, but resolved/persisted here regardless so a later
+    # --multi-arch-only re-run (with no --platforms) still remembers it.
+    # Left unset (not exported) when off, so build-deploy.sh's own default
+    # (linux/amd64,linux/arm64) applies untouched if ever invoked directly.
+    if [ "$MULTI_ARCH" -eq 1 ]; then
+      PLATFORMS="$(resolve_setting "$PLATFORMS_ARG" PLATFORMS PLATFORMS PLATFORMS)"
+      PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
+      set_env_var PLATFORMS "$PLATFORMS"
+      echo "==> Platforms: $PLATFORMS"
+    fi
   fi
 fi
 
@@ -418,6 +440,7 @@ elif [ "$PUSH" -eq 1 ] && [ "${MULTI_ARCH:-0}" -eq 1 ]; then
 	NEXT_PUBLIC_SITE_URL="$NEXT_PUBLIC_SITE_URL" \
 	GHCR_USER="${GHCR_USER:-}" \
 	GHCR_TOKEN="${GHCR_TOKEN:-}" \
+	PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}" \
 	./scripts/lib/build-deploy.sh
 
 	# A multi-arch image built via buildx --push exists only in the

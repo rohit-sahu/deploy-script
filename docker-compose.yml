@@ -1,8 +1,19 @@
 services:
   web:
     build:
-      context: .
+      # Fetched directly from the actual app repo (rohit-sahu/portfolio) via
+      # SSH -- this "deploy-script" repo intentionally has no local app
+      # source. Requires an SSH agent with a deploy key that has read access
+      # to that repo, forwarded into the build via `ssh: [default]` below
+      # (`ssh-agent -s && ssh-add <deploy-key>` before running `docker
+      # compose build` / `deploy.sh`). Override branch/repo without editing
+      # this file via APP_REPO_GIT_CONTEXT (e.g. in .env or exported).
+      context: ${APP_REPO_GIT_CONTEXT:-git@github.com:rohit-sahu/portfolio.git#main}
+      # Resolved relative to the git context above, so the Dockerfile must
+      # live in the app repo itself (rohit-sahu/portfolio), not here.
       dockerfile: Dockerfile
+      ssh:
+        - default
       args:
         # Inlined into the JS bundle at build time (see Dockerfile comment) —
         # runtime `environment:` below can't override this after the fact.

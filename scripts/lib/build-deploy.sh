@@ -8,9 +8,13 @@
 # Required env var: IMAGE (e.g. ghcr.io/<owner>/rohit-portfolio:latest)
 # Optional env vars: APP_DIR, NEXT_PUBLIC_SITE_URL, PLATFORMS (default:
 #                     linux/amd64,linux/arm64), BUILDER_NAME (default:
-#                     portfolio-builder), GHCR_USER/GHCR_TOKEN (registry
-#                     login — skipped if left blank; caller/deploy.sh is
-#                     expected to have already handled login in that case).
+#                     portfolio-builder), APP_REPO_GIT_CONTEXT (default: see
+#                     below -- the actual app repo, fetched via SSH; needs an
+#                     SSH agent with a deploy key forwarded in, same as
+#                     docker-compose.yml's build.context), GHCR_USER/
+#                     GHCR_TOKEN (registry login — skipped if left blank;
+#                     caller/deploy.sh is expected to have already handled
+#                     login in that case).
 set -euo pipefail
 # Stay in the repo root (two levels up from scripts/lib/) — docker compose
 # commands below rely on relative paths (Dockerfile, docker-compose.yml).
@@ -18,6 +22,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 BUILDER_NAME="${BUILDER_NAME:-portfolio-builder}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
+# Same default as docker-compose.yml's web.build.context -- this repo has no
+# local app source, so both single-arch (docker compose build) and
+# multi-arch (this script) builds fetch it directly from the app repo.
+APP_REPO_GIT_CONTEXT="${APP_REPO_GIT_CONTEXT:-git@github.com:rohit-sahu/portfolio.git#main}"
 
 if [ -z "${IMAGE:-}" ]; then
 	echo "IMAGE must be set (e.g. IMAGE=ghcr.io/<owner>/rohit-portfolio:latest)." >&2
@@ -59,19 +67,21 @@ fi
 #    build.platforms: list can drive multi-arch through Compose, which
 #    we deliberately avoid since that file is shared with deploy.sh's
 #    native/local single-arch builds). So this calls `docker buildx build`
-#    directly instead, passing the same context/Dockerfile/build-args
-#    docker-compose.yml itself uses — this stays scoped to just this
+#    directly instead, fetching the same app repo/Dockerfile/build-args
+#    docker-compose.yml itself uses (via SSH, since the actual app source
+#    lives in a separate repo, not here) — this stays scoped to just this
 #    script, never affecting docker-compose.yml or other build paths.
-echo "📦 Building and pushing multi-platform image (${PLATFORMS})..."
+echo "📦 Building and pushing multi-platform image (${PLATFORMS}) from ${APP_REPO_GIT_CONTEXT}..."
 docker buildx build \
 	--builder "$BUILDER_NAME" \
 	--platform "$PLATFORMS" \
+	--ssh default \
 	--build-arg APP_DIR="$APP_DIR" \
 	--build-arg NEXT_PUBLIC_SITE_URL="$NEXT_PUBLIC_SITE_URL" \
 	-f Dockerfile \
 	-t "$IMAGE" \
 	--push \
-	.
+	"$APP_REPO_GIT_CONTEXT"
 
 # 4. Build and push. `docker compose build` supports --platform directly
 #    (Compose v2.20+) without any docker-compose.yml changes — this stays
