@@ -10,8 +10,13 @@ server {
 	}
 
 	# Answer ACME HTTP-01 challenges by forwarding to the caddy companion.
+	# Host header must be preserved (nginx otherwise defaults it to the
+	# upstream's own name, i.e. "caddy") so Caddy's domain-keyed site block
+	# actually matches the request instead of falling through to an
+	# automatic-HTTPS redirect to the bogus host "caddy".
 	location /.well-known/acme-challenge/ {
 		proxy_pass http://caddy:80;
+		proxy_set_header Host $host;
 	}
 
 	# Block all other plain HTTP traffic; force HTTPS.
