@@ -45,6 +45,12 @@ SYNC_REPO="${SYNC_REPO:-true}"
 
 # Common / security settings
 APP_USER="${APP_USER:-portfolio}"
+# Pinned to match the container image's hardcoded runtime UID (see the
+# `nextjs` user in ./Dockerfile: `adduser --system --uid 1001 nextjs`), so
+# files owned by this host user (e.g. secrets/admin-users.json) are directly
+# readable by the container process without loosening file permissions.
+# Change this only if the Dockerfile's baked-in UID also changes.
+APP_USER_UID="${APP_USER_UID:-1001}"
 SSH_PORT="${SSH_PORT:-22}"
 DISABLE_PASSWORD_AUTH="${DISABLE_PASSWORD_AUTH:-yes}"
 
@@ -149,14 +155,34 @@ module_common_setup() {
 }
 
 module_create_app_user() {
-  echo "==> [common_setup] Ensuring app user exists: $APP_USER"
+  echo "==> [common_setup] Ensuring app user exists: $APP_USER (uid ${APP_USER_UID})"
   if ! id "$APP_USER" >/dev/null 2>&1; then
-    run useradd --system --create-home --shell /bin/bash "$APP_USER"
+    # Fail fast (with a clear message) instead of useradd silently picking a
+    # different free uid if APP_USER_UID is already taken by someone else --
+    # that would silently defeat the whole point of pinning it.
+    local existing_owner
+    existing_owner="$(getent passwd "$APP_USER_UID" 2>/dev/null | cut -d: -f1 || true)"
+    if [[ "$DRY_RUN" != "true" && -n "$existing_owner" ]]; then
+      echo "[ERROR] uid ${APP_USER_UID} is already assigned to user '${existing_owner}'. Set APP_USER_UID to a free uid and re-run." >&2
+      return 1
+    fi
+    run useradd --system --uid "$APP_USER_UID" --create-home --shell /bin/bash "$APP_USER"
     run passwd -l "$APP_USER" >/dev/null 2>&1 || true
-    echo "[INFO] Created system user: $APP_USER"
+    echo "[INFO] Created system user: $APP_USER (uid ${APP_USER_UID})"
   else
     echo "[INFO] User already exists: $APP_USER. Enforcing safe configuration."
     run usermod --shell /bin/bash "$APP_USER"
+
+    local current_uid
+    current_uid="$(id -u "$APP_USER" 2>/dev/null || true)"
+    if [[ -n "$current_uid" && "$current_uid" != "$APP_USER_UID" ]]; then
+      echo "[WARN] $APP_USER has uid ${current_uid}, not the expected ${APP_USER_UID}."
+      echo "[WARN] Container-mounted secrets (e.g. admin_users) may be unreadable by the app's in-container user until this matches."
+      echo "[WARN] To fix (stops services relying on this uid first -- review before running):"
+      echo "[WARN]   usermod -u ${APP_USER_UID} ${APP_USER} && groupmod -g ${APP_USER_UID} ${APP_USER} 2>/dev/null || true"
+      echo "[WARN]   find / -xdev -user ${current_uid} -exec chown -h ${APP_USER_UID} {} \\; 2>/dev/null"
+      echo "[WARN] Not applying this automatically -- it can affect files outside this script's control."
+    fi
   fi
 }
 

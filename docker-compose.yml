@@ -163,6 +163,13 @@ services:
     profiles: ["cloudflare"]
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
+    # Run as the same uid as the host's APP_USER (see prod-bootstrap.sh's
+    # APP_USER_UID, default 1001) instead of the image's own default non-root
+    # user, so it can read secrets/cloudflare_tunnel_token (owned by
+    # APP_USER, mode 0600) without loosening that file's permissions. Only
+    # reads a plaintext token at startup -- no internal state that depends on
+    # the image's own default uid.
+    user: "${APP_USER_UID:-1001}:${APP_USER_UID:-1001}"
     depends_on:
       - web
     command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:2000", "run"]
