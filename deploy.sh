@@ -39,6 +39,7 @@ Options (CLI flag | source key | default):
   --pull                        | (boolean flag)                | off
   --push                        | (boolean flag)                | off
   (with --pull/--push) IMAGE via | IMAGE (in ${ENV_FILE})        | (none — required)
+  --multi-arch / --no-multi-arch (with --push) | MULTI_ARCH (in ${ENV_FILE}) | off (prompted if interactive)
   --ghcr-user USER (with --push, optional) | GHCR_USER          | (none — see below)
   --ghcr-token TOKEN (with --push, optional) | GHCR_TOKEN       | (none — see below)
   --env-file PATH               | ENV_FILE_PATH                 | .env.local
@@ -98,6 +99,18 @@ login is handled automatically, in this order:
   IMAGE=ghcr.io/<owner>/rohit-portfolio:latest $0 --push your-domain.com
   $0 --push your-domain.com --ghcr-user myuser --ghcr-token ghp_xxx
 
+Build a multi-arch (linux/amd64 + linux/arm64) image and push it as a single
+manifest (--multi-arch, only meaningful with --push): delegates to
+scripts/lib/build-deploy.sh, which builds via buildx/docker-container driver
+so any host (this one or a different-arch one, e.g. amd64 EC2) can pull the
+right native image with no "platform does not match" warning. Since a
+multi-arch image can't be loaded into the local Docker engine directly, this
+script pulls the tag back down afterward (Docker auto-selects this host's
+matching layer from the manifest) before starting the stack — skipped
+entirely with --no-up.
+  IMAGE=ghcr.io/<owner>/rohit-portfolio:latest $0 --push --multi-arch
+  $0 --push --no-multi-arch   # force native single-arch push instead
+
 --pull and --push are mutually exclusive. Neither flag = build and run
 locally only, no registry involved.
 
@@ -142,6 +155,7 @@ ENV_FILE_ARG=""
 GHCR_USER_ARG=""
 GHCR_TOKEN_ARG=""
 APP_DIR_ARG=""
+MULTI_ARCH_ARG=""
 args=()
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -150,6 +164,9 @@ while [ $# -gt 0 ]; do
 		--quick-tunnel) QUICK_TUNNEL=1; shift ;;
 		--pull) PULL=1; shift ;;
 		--push) PUSH=1; shift ;;
+		--multi-arch) MULTI_ARCH_ARG="1"; shift ;;
+		--multi-arch=*) MULTI_ARCH_ARG="${1#*=}"; shift ;;
+		--no-multi-arch) MULTI_ARCH_ARG="0"; shift ;;
 		--no-up) NO_UP=1; shift ;;
 		--env-file) ENV_FILE_ARG="${2:-}"; shift 2 ;;
 		--env-file=*) ENV_FILE_ARG="${1#*=}"; shift ;;
@@ -353,6 +370,25 @@ if [ "$PULL" -eq 1 ] || [ "$PUSH" -eq 1 ]; then
 		echo "==> Logging in to ${registry}..."
 		echo "$GHCR_TOKEN" | docker login "$registry" -u "$GHCR_USER" --password-stdin
 	fi
+
+	# --multi-arch only applies to --push (a local-only build with no push is
+  # inherently single-arch, so pulling doesn't ask about this at all).
+  # Resolved through the same 5-tier chain as every other setting here.
+  if [ "$PUSH" -eq 1 ]; then
+    MULTI_ARCH="$(resolve_setting "$MULTI_ARCH_ARG" MULTI_ARCH MULTI_ARCH MULTI_ARCH)"
+    if [ -z "$MULTI_ARCH" ] && [ -t 0 ]; then
+      read -p "Build multi-arch (linux/amd64 + linux/arm64) image? [y/N] " ma_ans
+      [[ "$ma_ans" =~ ^[Yy] ]] && MULTI_ARCH=1
+    fi
+    # Normalize any truthy spelling to a plain 0/1 before persisting, so
+    # future reads via resolve_setting stay simple string comparisons.
+    case "${MULTI_ARCH:-0}" in
+      1|true|TRUE|yes|YES|y|Y) MULTI_ARCH=1 ;;
+      *) MULTI_ARCH=0 ;;
+    esac
+    set_env_var MULTI_ARCH "$MULTI_ARCH"
+    echo "==> Multi-arch build: $([ "$MULTI_ARCH" -eq 1 ] && echo "on (linux/amd64+arm64)" || echo "off (native only)")"
+  fi
 fi
 
 set_env_var DOMAIN "$DOMAIN"
@@ -375,6 +411,25 @@ fi
 if [ "$PULL" -eq 1 ]; then
 	echo "==> Pulling image: ${IMAGE}..."
 	docker compose pull web
+elif [ "$PUSH" -eq 1 ] && [ "${MULTI_ARCH:-0}" -eq 1 ]; then
+	echo "==> Delegating to scripts/lib/build-deploy.sh for multi-arch build+push..."
+	IMAGE="$IMAGE" \
+	APP_DIR="$APP_DIR" \
+	NEXT_PUBLIC_SITE_URL="$NEXT_PUBLIC_SITE_URL" \
+	GHCR_USER="${GHCR_USER:-}" \
+	GHCR_TOKEN="${GHCR_TOKEN:-}" \
+	./scripts/lib/build-deploy.sh
+
+	# A multi-arch image built via buildx --push exists only in the
+	# registry, never loaded into the local Docker engine (buildx can't
+	# "docker load" more than one platform at once). Pull it back down so
+	# 'docker compose up -d' below has a local image to actually run —
+	# Docker will automatically select the layer matching this host's
+	# native architecture from the manifest list.
+	if [ "$NO_UP" -eq 0 ]; then
+		echo "==> Pulling back native-arch layer to run locally..."
+		docker compose pull web
+	fi
 else
 	echo "==> Building images..."
 	docker compose build
