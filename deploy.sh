@@ -34,6 +34,7 @@ Options (CLI flag | source key | default):
   [next-public-site-url] (pos.)| NEXT_PUBLIC_SITE_URL           | https://<domain>
   --app-dir DIR                 | APP_DIR (in ${ENV_FILE})       | /app
   --local                      | (boolean flag)                | off
+  --cloudflare-proxied / --no-cloudflare-proxied | CLOUDFLARE_PROXIED (in ${ENV_FILE}) | off
   --tunnel                     | (boolean flag)                | off
   --quick-tunnel                | (boolean flag)                | off
   --pull                        | (boolean flag)                | off
@@ -78,6 +79,17 @@ prints a random https://<random>.trycloudflare.com URL in
 
 --tunnel and --quick-tunnel are mutually exclusive. Neither flag = no
 Cloudflare Tunnel (just nginx + Caddy).
+
+--cloudflare-proxied: only for a DIFFERENT setup than --tunnel/--quick-tunnel
+above — DNS for <domain> is proxied (orange-cloud) through Cloudflare, but
+requests still reach this nginx directly (not via cloudflared). Makes nginx
+trust CF-Connecting-IP (restricted to Cloudflare's published IP ranges) for
+the app's /admin IP allowlist + rate limiting instead of \$remote_addr, which
+would otherwise always be one of Cloudflare's edge IPs. Also firewall ports
+80/443 to Cloudflare's ranges yourself (see RUNNING.md) — this flag alone
+does not do that. Remembered in ${ENV_FILE} like DOMAIN; --no-cloudflare-proxied
+turns it back off on a later re-run.
+  $0 --cloudflare-proxied your-domain.com
 
 Pull a pre-built image instead of building locally (--pull): requires IMAGE
 to be set to a registry reference (e.g. an ECR image), and that image to
@@ -164,10 +176,13 @@ GHCR_TOKEN_ARG=""
 APP_DIR_ARG=""
 MULTI_ARCH_ARG=""
 PLATFORMS_ARG=""
+CLOUDFLARE_PROXIED_ARG=""
 args=()
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--local) LOCAL=1; shift ;;
+		--cloudflare-proxied) CLOUDFLARE_PROXIED_ARG="1"; shift ;;
+		--no-cloudflare-proxied) CLOUDFLARE_PROXIED_ARG="0"; shift ;;
 		--tunnel) TUNNEL=1; shift ;;
 		--quick-tunnel) QUICK_TUNNEL=1; shift ;;
 		--pull) PULL=1; shift ;;
@@ -258,6 +273,15 @@ else
 fi
 export LOCAL_CERT_MODE
 
+CLOUDFLARE_PROXIED="$(resolve_setting "$CLOUDFLARE_PROXIED_ARG" CLOUDFLARE_PROXIED CLOUDFLARE_PROXIED CLOUDFLARE_PROXIED)"
+# Normalize any truthy spelling to a plain 0/1 before persisting/exporting,
+# same reasoning as MULTI_ARCH below.
+case "${CLOUDFLARE_PROXIED:-0}" in
+	1|true|TRUE|yes|YES|y|Y) CLOUDFLARE_PROXIED=1 ;;
+	*) CLOUDFLARE_PROXIED=0 ;;
+esac
+export CLOUDFLARE_PROXIED
+
 if [ -z "$DOMAIN" ] && [ "$LOCAL" -ne 1 ] && [ -t 0 ]; then
 	read -p "Domain (e.g. your-domain.com): " DOMAIN
 fi
@@ -312,6 +336,12 @@ if ! json_array_nonempty "$ADMIN_USERS_FILE"; then
 	fi
 	if ! json_array_nonempty "$ADMIN_USERS_FILE"; then
 		echo "WARNING: $ADMIN_USERS_FILE has no admin users yet; /admin will be unreachable until you run: npm run admin:create" >&2
+	fi
+elif [ -t 0 ]; then
+	manage_admins_ans=""
+	read -p "==> Manage /admin users (add/update/remove/list) now? [y/N] " manage_admins_ans
+	if [[ "$manage_admins_ans" =~ ^[Yy] ]]; then
+		npm run --silent admin:create
 	fi
 fi
 
@@ -417,12 +447,16 @@ set_env_var DOMAIN "$DOMAIN"
 set_env_var NEXT_PUBLIC_SITE_URL "$NEXT_PUBLIC_SITE_URL"
 set_env_var CADDYFILE "$CADDYFILE"
 set_env_var APP_DIR "$APP_DIR"
+set_env_var CLOUDFLARE_PROXIED "$CLOUDFLARE_PROXIED"
 [ -n "${IMAGE:-}" ] && set_env_var IMAGE "$IMAGE"
 echo "==> Domain: $DOMAIN"
 echo "==> Site URL: $NEXT_PUBLIC_SITE_URL"
 echo "==> App dir: $APP_DIR"
 if [ "$LOCAL" -eq 1 ]; then
 	echo "==> Mode: LOCAL TESTING (self-signed certificate, browsers/curl will warn)"
+fi
+if [ "$CLOUDFLARE_PROXIED" -eq 1 ]; then
+	echo "==> Cloudflare proxied DNS: nginx trusts CF-Connecting-IP (make sure 80/443 are firewalled to Cloudflare's IP ranges — see RUNNING.md)"
 fi
 if [ "${COMPOSE_PROFILES:-}" = "cloudflare" ]; then
 	echo "==> Cloudflare Tunnel: enabled ($CLOUDFLARE_TOKEN_FILE found)"

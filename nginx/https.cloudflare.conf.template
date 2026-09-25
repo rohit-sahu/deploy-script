@@ -1,0 +1,57 @@
+# Defense-in-depth: reject any TLS handshake whose SNI doesn't match
+# ${DOMAIN} (e.g. a direct request to this server's public IP, bypassing
+# Cloudflare entirely). ssl_reject_handshake is used instead of `return 444`
+# because the connection must be rejected before/during the TLS handshake,
+# before any HTTP request line exists. Primary protection is still the AWS
+# Security Group / host firewall restricted to Cloudflare's IP ranges -- see
+# RUNNING.md's "Cloudflare proxied DNS" section.
+server {
+	listen 443 ssl default_server;
+	server_name _;
+	ssl_reject_handshake on;
+}
+
+server {
+	listen 443 ssl;
+	http2 on;
+	server_name ${DOMAIN};
+
+	ssl_certificate     ${CERT_FILE};
+	ssl_certificate_key ${KEY_FILE};
+	ssl_protocols TLSv1.2 TLSv1.3;
+	ssl_prefer_server_ciphers off;
+	ssl_session_cache shared:SSL:10m;
+	ssl_session_timeout 1d;
+
+	add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+
+	# Cloudflare (proxied/orange-cloud DNS) is in front of this nginx, so
+	# $remote_addr is always one of Cloudflare's edge IPs, never the real
+	# visitor's. ngx_http_realip_module rewrites $remote_addr in-place from
+	# CF-Connecting-IP -- but ONLY when the connecting IP is actually one of
+	# Cloudflare's published ranges (nginx/cloudflare-ips.conf) -- so this is
+	# safe as long as port 443 is also firewalled to just those same ranges
+	# (see DEPLOYMENT.md/RUNNING.md); otherwise anyone could hit nginx
+	# directly and set their own fake CF-Connecting-IP header.
+	include /etc/nginx/cloudflare-ips.conf;
+
+	location / {
+		proxy_pass http://web:3000;
+		proxy_http_version 1.1;
+		proxy_set_header Host $host;
+		proxy_set_header X-Real-IP $remote_addr;
+		# $remote_addr here is now the realip-resolved visitor IP (see
+		# above), not Cloudflare's edge IP or a client-supplied value, so
+		# it's safe to set (never append-to/trust the original
+		# X-Forwarded-For the client may have sent).
+		proxy_set_header X-Forwarded-For $remote_addr;
+		# Not set explicitly -- nginx passes the client's original
+		# CF-Connecting-IP header through untouched by default, and the app
+		# prefers it over X-Forwarded-For anyway (see src/lib/client-ip.ts
+		# in the portfolio app repo), so this is belt-and-suspenders with
+		# the X-Forwarded-For override above, not the only line of defense.
+		proxy_set_header X-Forwarded-Proto $scheme;
+		proxy_set_header Upgrade $http_upgrade;
+		proxy_set_header Connection "upgrade";
+	}
+}

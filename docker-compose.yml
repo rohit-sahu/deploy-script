@@ -59,9 +59,10 @@ services:
       - resume_cache:${APP_DIR:-/opt/portfolio}/data
     env_file:
       # Also carries the server-only secrets for /admin: MONGODB_URI,
-      # MONGODB_DB, AUTH_SECRET (see .env.example). These are read at
-      # runtime, not build time, so unlike NEXT_PUBLIC_SITE_URL they don't
-      # need a build arg.
+      # MONGODB_DB, AUTH_SECRET, ADMIN_SECRETS_KEY (2FA encryption key),
+      # ADMIN_TOTP_ISSUER, ADMIN_IP_ALLOWLIST (see .env.example). These are
+      # read at runtime, not build time, so unlike NEXT_PUBLIC_SITE_URL they
+      # don't need a build arg.
       - path: ${ENV_FILE_PATH:-.env.local}
         required: false
     healthcheck:
@@ -124,6 +125,16 @@ services:
 
   # Public reverse proxy: terminates TLS using the certificate Caddy obtained,
   # redirects all plain HTTP to HTTPS, and forwards app traffic to `web`.
+  # This is the first hop from the public internet — see
+  # nginx/https.conf.template, which sets X-Forwarded-For to $remote_addr
+  # (never $proxy_add_x_forwarded_for) so a client can't spoof the IP the
+  # app uses for its /admin IP allowlist and rate limiting (ADMIN_IP_ALLOWLIST,
+  # see .env.example). Both this nginx AND cloudflared below can be active
+  # at once — the app trusts CF-Connecting-IP over X-Forwarded-For whenever
+  # it's present (see src/lib/client-ip.ts in the app repo), so whichever
+  # path a request actually took is handled correctly. If DNS for DOMAIN is
+  # proxied (orange-cloud) through Cloudflare in front of THIS nginx (not
+  # just Cloudflare Tunnel), set CLOUDFLARE_PROXIED=1 below — see RUNNING.md.
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
@@ -138,9 +149,19 @@ services:
       # Selects which of Caddy's cert stores nginx looks in (see
       # nginx/docker-entrypoint.sh) — set by deploy.sh when --local is used.
       LOCAL_CERT_MODE: ${LOCAL_CERT_MODE:-0}
+      # Set to 1 only if Cloudflare proxied/orange-cloud DNS sits in front of
+      # THIS nginx (not needed for the cloudflared/cloudflared-quick Tunnel
+      # profiles below, which bypass nginx entirely). Switches to
+      # https.cloudflare.conf.template, which trusts CF-Connecting-IP via
+      # ngx_http_realip_module restricted to Cloudflare's published ranges
+      # (nginx/cloudflare-ips.conf) — also firewall 443 to those same ranges
+      # (see RUNNING.md), otherwise this setting is unsafe.
+      CLOUDFLARE_PROXIED: ${CLOUDFLARE_PROXIED:-0}
     volumes:
       - ./nginx/app.conf.template:/etc/nginx/templates/app.conf.template:ro
       - ./nginx/https.conf.template:/etc/nginx/templates/https.conf.template:ro
+      - ./nginx/https.cloudflare.conf.template:/etc/nginx/templates/https.cloudflare.conf.template:ro
+      - ./nginx/cloudflare-ips.conf:/etc/nginx/cloudflare-ips.conf:ro
       - ./nginx/docker-entrypoint.sh:/entrypoint.sh:ro
       - caddy_data:/caddy-data:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
@@ -169,7 +190,11 @@ services:
   # exists). The token is read from a file-based secret, never an env var,
   # so it never shows up in `docker inspect`/`docker compose config`.
   # Configure the tunnel's Public Hostname -> Service in the Cloudflare Zero
-  # Trust dashboard to point at http://web:3000 (see RUNNING.md).
+  # Trust dashboard to point at http://web:3000 (see RUNNING.md). This
+  # bypasses nginx entirely — Cloudflare's edge (not cloudflared itself)
+  # already set CF-Connecting-IP on the request before tunneling it here,
+  # so the app's IP allowlist/rate limiting still see the real visitor IP,
+  # not cloudflared's or Cloudflare's own IP (see src/lib/client-ip.ts).
   cloudflared:
     profiles: ["cloudflare"]
     image: cloudflare/cloudflared:latest

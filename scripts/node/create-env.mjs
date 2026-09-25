@@ -127,6 +127,12 @@ async function main() {
   const siteUrl = await askLine(
     `NEXT_PUBLIC_SITE_URL [${existing.NEXT_PUBLIC_SITE_URL || defaultSiteUrl}]: `
   );
+  const ipAllowlist = await askLine(
+    `ADMIN_IP_ALLOWLIST (comma-separated IPs/CIDRs allowed to reach /admin, blank = disabled)${existing.ADMIN_IP_ALLOWLIST ? " [keep existing]" : ""}: `
+  );
+  const totpIssuer = await askLine(
+    `ADMIN_TOTP_ISSUER (label shown in authenticator apps) [${existing.ADMIN_TOTP_ISSUER || "Portfolio Admin"}]: `
+  );
   const customEnv = await askCustomEnvVars(askLine);
   closeLineReader();
 
@@ -137,12 +143,26 @@ async function main() {
     console.log("==> Keeping existing AUTH_SECRET (re-run would invalidate active admin sessions).");
   }
 
+  // Only needed if/when an admin enables 2FA (see create-admin.mjs), but
+  // generated up front (like AUTH_SECRET) so it's already in place — an
+  // admin trying to enable 2FA later never has to stop and edit this file
+  // by hand first.
+  const adminSecretsKey = existing.ADMIN_SECRETS_KEY || crypto.randomBytes(32).toString("base64");
+  if (!existing.ADMIN_SECRETS_KEY) {
+    console.log("==> Generated a new ADMIN_SECRETS_KEY (encrypts any admin's 2FA secret at rest).");
+  } else {
+    console.log("==> Keeping existing ADMIN_SECRETS_KEY (rotating it would break decryption of any already-enrolled 2FA secrets).");
+  }
+
   const values = {
     NEXT_PUBLIC_SITE_URL: siteUrl || existing.NEXT_PUBLIC_SITE_URL || defaultSiteUrl,
     MONGODB_URI: mongoUri || existing.MONGODB_URI || "",
     MONGODB_DB: mongoDb || existing.MONGODB_DB || "portfolio",
     AUTH_SECRET: authSecret,
     ADMIN_USERS_FILE: existing.ADMIN_USERS_FILE || "",
+    ADMIN_SECRETS_KEY: adminSecretsKey,
+    ADMIN_TOTP_ISSUER: totpIssuer || existing.ADMIN_TOTP_ISSUER || "",
+    ADMIN_IP_ALLOWLIST: ipAllowlist || existing.ADMIN_IP_ALLOWLIST || "",
     RESUME_CACHE_FILE: existing.RESUME_CACHE_FILE || "",
     ...customEnv,
   };

@@ -30,7 +30,8 @@ const entryPoints = [
   "scripts/node/create-env.mjs",
   "scripts/node/create-cloudflare-tunnel-token.mjs",
   "scripts/node/send-to-ec2.mjs",
-  "scripts/node/get-from-ec2.mjs"
+  "scripts/node/get-from-ec2.mjs",
+  "scripts/node/update-cloudflare-ips.mjs"
 ].map((p) => path.join(ROOT, p));
 
 const buildOptions = {

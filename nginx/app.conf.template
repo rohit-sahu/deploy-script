@@ -1,3 +1,15 @@
+# Defense-in-depth: reject any plain-HTTP request whose Host header doesn't
+# match ${DOMAIN} (e.g. a direct request to this server's public IP, or a
+# forged Host header). Primary protection against direct-IP access is still
+# the AWS Security Group / host firewall (restricted to Cloudflare's IP
+# ranges when CLOUDFLARE_PROXIED=1) -- this is a second layer in case that's
+# ever misconfigured or bypassed.
+server {
+	listen 80 default_server;
+	server_name _;
+	return 444;
+}
+
 server {
 	listen 80;
 	server_name ${DOMAIN};

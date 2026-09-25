@@ -11,13 +11,15 @@
     "tunnel:token": "node dist/create-cloudflare-tunnel-token.mjs",
     "ec2:send": "node dist/send-to-ec2.mjs",
     "ec2:get": "node dist/get-from-ec2.mjs",
+    "cloudflare-ips:update": "node dist/update-cloudflare-ips.mjs",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
     "build": "npm install && node scripts/node/build.mjs && rm -rf node_modules",
     "build:dev": "npm install && node scripts/node/build.mjs --dev"
   },
   "dependencies": {
-    "bcryptjs": "^3.0.3"
+    "bcryptjs": "^3.0.3",
+    "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

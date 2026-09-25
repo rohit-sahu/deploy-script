@@ -1,0 +1,9 @@
+#!/usr/bin/env node
+import u from"node:fs";import c from"node:path";import{fileURLToPath as v}from"node:url";import R from"node:fs";import f from"node:readline";function p(){let o=process.stdin.isTTY,i=o?null:R.readFileSync(0,"utf8").split(`
+`),e=o?f.createInterface({input:process.stdin,output:process.stdout}):null;function a(s){if(!o){process.stdout.write(s);let r=(i.shift()??"").trim();return process.stdout.write(r+`
+`),Promise.resolve(r)}return e||(e=f.createInterface({input:process.stdin,output:process.stdout})),new Promise(r=>{e.question(s,t=>r(t.trim()))})}function k(){e?.close(),e=null}function b(s){if(!o)return process.stdout.write(s+`
+`),Promise.resolve((i.shift()??"").trim());if(e)throw new Error("closeLineReader() must be called before the first askHidden()");return new Promise(r=>{let t=process.stdin;process.stdout.write(s);let h=t.isRaw;t.setRawMode(!0),t.resume(),t.setEncoding("utf8");let n="",l=m=>{switch(m){case`
+`:case"\r":case"":t.setRawMode(h),t.pause(),t.removeListener("data",l),process.stdout.write(`
+`),r(n);break;case"":process.stdout.write(`
+`),process.exit(1);break;case"\x7F":case"\b":n.length>0&&(n=n.slice(0,-1),process.stdout.write("\b \b"));break;default:n+=m,process.stdout.write("*");break}};t.on("data",l)})}return{askLine:a,askHidden:b,closeLineReader:k}}var L=c.dirname(v(import.meta.url)),w=c.join(L,"..","secrets"),d=c.join(w,"cloudflare_tunnel_token");async function y(){let{askHidden:o,closeLineReader:i}=p();i();let e=await o("Cloudflare Tunnel token: "),a=await o("Confirm token: ");if(!e){console.error("A token is required."),process.exitCode=1;return}if(e!==a){console.error("Tokens did not match."),process.exitCode=1;return}u.mkdirSync(w,{recursive:!0}),u.writeFileSync(d,e+`
+`,{mode:384}),u.chmodSync(d,384),console.log(`Saved token to ${c.relative(process.cwd(),d)} (mode 600).`),console.log("Enable it with: ./deploy.sh --tunnel your-domain.com")}y();
