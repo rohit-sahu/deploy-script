@@ -2,6 +2,9 @@
 	admin off
 	http_port 80
 	https_port 8443
+	cert_issuer_policy {
+        renew_before 99%
+    }
 }
 
 # Cert-only mode: this site block exists solely so Caddy requests/renews a
