@@ -2,8 +2,9 @@
 	admin off
 	http_port 80
 	https_port 8443
-	cert_issuer_policy {
-        renew_before 99%
+	# The correct global setup for a forced renewal
+    tls {
+        renewal_window_ratio 0.99
     }
 }
 
