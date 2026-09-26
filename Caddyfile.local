@@ -3,12 +3,23 @@
 	http_port 80
 	https_port 8443
 	local_certs
+	pki {
+		ca local {
+			name "Rohit Portfolio Internal CA"
+			root_cn "Rohit Portfolio Root CA"
+			intermediate_cn "Rohit Portfolio Intermediate CA"
+		}
+	}
 }
 
 # Local testing mode: issues a self-signed cert from Caddy's internal CA
 # instantly (no ACME/internet/DNS required). Browsers/curl will flag it as
 # untrusted — that's expected; use `curl -k` or accept the warning.
 {$DOMAIN} {
-	tls internal
+	tls {
+		issuer internal {
+			ca local
+		}
+	}
 	respond "ok"
 }
