@@ -137,6 +137,8 @@ openssl s_client -connect your-domain.com:443 -servername your-domain.com </dev/
 
 By default, `80`/`443` are open to the whole internet (`0.0.0.0/0`), so your site is reachable both via your domain **and** via the server's raw public IP. This section locks that down so only Cloudflare can reach your origin. **Do this only after step 7 (Verify) passes** — the very first certificate must be issued before you flip Cloudflare's proxy on, otherwise you'll hit a chicken-and-egg SSL failure (see [step 9c](#9c-why-the-order-matters-first-cert-vs-renewal) below).
 
+> **New to how the host firewall, Docker, and iptables interact?** Read [FIREWALL_AND_DOCKER_NETWORKING.md](./FIREWALL_AND_DOCKER_NETWORKING.md) first — it explains, from first principles, why Docker's published container ports can silently bypass `ufw` (a real issue this project hit in production) and how `prod-bootstrap.sh` fixes it.
+
 ### 9a. Move DNS to Cloudflare (gray-cloud first)
 
 1. Add your domain to Cloudflare, update nameservers at your registrar.

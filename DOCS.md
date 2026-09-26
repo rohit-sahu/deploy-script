@@ -7,6 +7,7 @@ Which `.md` file to read for what.
 | [README.md](./README.md) | Get an overview of the project — what it is, its sections, tech stack, and how to start local dev. Start here. |
 | [RUNNING.md](./RUNNING.md) | Run the app in **any** scenario — local dev, Docker locally, `--local`/`--tunnel`/`--quick-tunnel` testing — as a quick-reference table, not a single linear path. |
 | [ADMIN_SECURITY.md](./ADMIN_SECURITY.md) | Understand the `/admin` login security stack (rate limiting, 2FA, IP allowlist), the nginx IP-forwarding fixes, `--cloudflare-proxied` mode, and the Cloudflare IP auto-updater — what each file does and the full request flow. |
+| [FIREWALL_AND_DOCKER_NETWORKING.md](./FIREWALL_AND_DOCKER_NETWORKING.md) | Understand, from first principles, how the AWS Security Group, host firewall (`ufw`), and Docker's own `iptables` rules interact — including why Docker-published container ports can silently bypass `ufw` (`DOCKER-USER` chain), and how `prod-bootstrap.sh`/`verify-bootstrap.sh` fix and verify it. Includes a troubleshooting checklist. |
 | [PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md) | Follow a single, ordered checklist to go from a fresh server + domain to a live HTTPS site via Docker Compose (`deploy.sh`). The condensed, do-this-in-order version. |
 | [DEPLOYMENT.md](./DEPLOYMENT.md) | Compare deployment **options** (Vercel vs. Docker/VPS vs. plain Node) before picking one, including env var differences between them. |
 | [IMAGE_DEPLOYMENT_OPTIONS.md](./IMAGE_DEPLOYMENT_OPTIONS.md) | Decide how the `web` Docker image gets onto a server — build on the server, or pull a pre-built image from Docker Hub/GHCR/ECR/a transferred file. Referenced from the deploy step in `PRODUCTION_DEPLOYMENT.md`. |
@@ -20,3 +21,4 @@ Which `.md` file to read for what.
 - **Deciding where to host at all:** DEPLOYMENT.md.
 - **Redeploying / changing how the image is built:** IMAGE_DEPLOYMENT_OPTIONS.md.
 - **Setting up or auditing `/admin` login security (2FA, rate limiting, IP allowlist, Cloudflare-proxied nginx):** ADMIN_SECURITY.md.
+- **Debugging "direct-IP access still works" / understanding ufw vs. Docker vs. Security Groups:** FIREWALL_AND_DOCKER_NETWORKING.md, referenced from PRODUCTION_DEPLOYMENT.md's Step 9.

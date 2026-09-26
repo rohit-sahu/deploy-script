@@ -116,6 +116,34 @@ if [[ "$CLOUDFLARE_ONLY_WEB" == "true" ]]; then
   else
     info "AWS_SECURITY_GROUP_ID not set or aws cli unavailable — skipping Security Group check"
   fi
+
+  # Docker's *published* container ports bypass ufw entirely (Docker manages
+  # them via its own iptables FORWARD-chain rules, evaluated before ufw's own
+  # forward rules) -- module_docker_user_firewall works around this using the
+  # DOCKER-USER chain, which Docker created (and consults first). Only
+  # relevant on Ubuntu/Debian, and only once Docker is actually installed.
+  if [[ "$ID" == "ubuntu" || "$ID" == "debian" ]]; then
+    if command -v docker >/dev/null 2>&1; then
+      [[ -x /usr/local/bin/docker-user-cloudflare-fw.sh ]] \
+        && ok "DOCKER-USER Cloudflare-fw script present and executable" \
+        || bad "DOCKER-USER Cloudflare-fw script missing/not executable -- Docker-published ports 80/443 may bypass ufw entirely (see module_docker_user_firewall in prod-bootstrap.sh)"
+      systemctl is-enabled --quiet docker-user-cloudflare-fw.service 2>/dev/null \
+        && ok "docker-user-cloudflare-fw.service enabled (re-applies rules on every boot)" \
+        || bad "docker-user-cloudflare-fw.service not enabled -- DOCKER-USER rules won't survive a reboot"
+      if iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+        DU_CIDR_COUNT=$(iptables -L DOCKER-USER -n | grep -c "cf-fw-managed" || true)
+        DU_DROP_COUNT=$(iptables -L DOCKER-USER -n | grep -cE "DROP.*multiport dports 80,443.*cf-fw-managed" || true)
+        [[ "$DU_CIDR_COUNT" -gt 0 ]] && ok "DOCKER-USER chain has ${DU_CIDR_COUNT} cf-fw-managed rule(s)" \
+          || bad "DOCKER-USER chain has no cf-fw-managed rules -- Docker-published ports 80/443 are NOT restricted to Cloudflare's ranges (direct-IP access likely still works)"
+        [[ "$DU_DROP_COUNT" -gt 0 ]] && ok "DOCKER-USER chain drops non-Cloudflare traffic on 80,443" \
+          || bad "DOCKER-USER chain is missing its DROP rule for 80,443 -- direct-IP access to Docker-published ports may still work"
+      else
+        bad "DOCKER-USER chain not found even though docker is installed -- is the Docker daemon running?"
+      fi
+    else
+      info "Docker not installed yet -- DOCKER-USER chain check skipped (applies automatically via systemd unit once Docker is installed)"
+    fi
+  fi
 else
   info "Skipped (CLOUDFLARE_ONLY_WEB not enabled)"
 fi
