@@ -10,10 +10,14 @@ server {
 	# Container healthcheck target; must not redirect (avoids following to
     # HTTPS and failing TLS verification against a not-yet-trusted cert).
     location = /healthz {
+        access_log off; # Optional: keeps your health checks from bloating logs
         default_type text/plain;
         return 200 "ok";
     }
-	return 444;
+	# 2. Fallback for everything else drops the connection
+    location / {
+        return 444;
+    }
 }
 
 server {
