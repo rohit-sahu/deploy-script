@@ -162,7 +162,9 @@ module_common_setup() {
         run yum install -y curl git unzip tar shadow-utils ca-certificates
       else
         run dnf update -y
-        run dnf install -y curl git unzip tar shadow-utils ca-certificates
+        # --allowerasing: AL2023 AMIs ship "curl-minimal", which conflicts
+        # with the full "curl" package; erase-and-replace resolves it.
+        run dnf install -y --allowerasing curl git unzip tar shadow-utils ca-certificates
       fi
       ;;
     ubuntu|debian)
@@ -294,20 +296,61 @@ apply_cloudflare_ufw_rules() {
   done <<< "$ranges"
 }
 
+# Installs AWS CLI v2 (official installer -- works identically on
+# Ubuntu/Debian/Amazon Linux, unlike distro packages which are often an
+# outdated v1) when it's missing but needed. Best-effort: on failure, prints
+# a warning and returns non-zero so the caller can skip Security Group
+# management instead of aborting the whole bootstrap.
+ensure_aws_cli() {
+  if command -v aws >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "[INFO] aws cli not found -- installing it (needed to manage Security Group ${AWS_SECURITY_GROUP_ID})."
+
+  local arch
+  case "$(uname -m)" in
+    x86_64) arch="x86_64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *)
+      echo "[WARN] Unsupported architecture for aws cli auto-install: $(uname -m). Install aws cli manually." >&2
+      return 1
+      ;;
+  esac
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  if ! run curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o "${tmp_dir}/awscliv2.zip"; then
+    echo "[WARN] Failed to download aws cli installer." >&2
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  run unzip -q -o "${tmp_dir}/awscliv2.zip" -d "$tmp_dir"
+  run "${tmp_dir}/aws/install" --update
+  rm -rf "$tmp_dir"
+
+  if command -v aws >/dev/null 2>&1; then
+    echo "[INFO] aws cli installed: $(aws --version 2>&1)"
+    return 0
+  fi
+  echo "[WARN] aws cli installation appears to have failed." >&2
+  return 1
+}
+
 # Optionally also locks down the EC2 Security Group itself to Cloudflare's
 # ranges (works regardless of OS_ID -- required on Amazon Linux, where the
 # host firewall step is skipped in favor of Security Groups/NACLs). Requires
 # AWS_SECURITY_GROUP_ID to be set and the aws cli to be usable (instance IAM
-# role, or credentials already configured) -- silently skipped (with a clear
-# message) otherwise, since this is optional/best-effort.
+# role, or credentials already configured) -- auto-installs the aws cli if
+# missing; silently skipped (with a clear message) if that install fails,
+# since this is optional/best-effort.
 module_cloudflare_security_group() {
   if [[ -z "$AWS_SECURITY_GROUP_ID" ]]; then
     echo "[INFO] AWS_SECURITY_GROUP_ID not set -- skipping automatic EC2 Security Group management."
     echo "[INFO] Restrict 80/443 to Cloudflare's ranges manually in the AWS console/CLI (see RUNNING.md)."
     return 0
   fi
-  if ! command -v aws >/dev/null 2>&1; then
-    echo "[WARN] aws cli not found -- cannot manage Security Group ${AWS_SECURITY_GROUP_ID} automatically." >&2
+  if ! command -v aws >/dev/null 2>&1 && ! ensure_aws_cli; then
+    echo "[WARN] aws cli not available -- cannot manage Security Group ${AWS_SECURITY_GROUP_ID} automatically." >&2
     return 0
   fi
 
@@ -349,8 +392,39 @@ module_cloudflare_security_group() {
 # this whole bootstrap script, which would also re-run apt upgrades/SSH
 # restarts/etc. weekly). SSH_PORT/AWS_SECURITY_GROUP_ID are baked in at
 # install time from this run's resolved values.
+# Installs the cron/cronie package (and enables+starts its service) when
+# `crontab` isn't already present -- both the Debian "cron" package and the
+# RHEL-family "cronie" package provide /usr/bin/crontab, so checking for it
+# works as a simple cross-distro proxy for "a cron daemon is installed."
+ensure_cron_installed() {
+  if command -v crontab >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "[INFO] crontab not found -- installing a cron daemon."
+  case "$OS_ID" in
+    ubuntu|debian)
+      run apt-get install -y cron
+      run systemctl enable cron
+      run systemctl restart cron
+      ;;
+    amzn)
+      if [[ "$OS_VERSION" == "2" ]]; then
+        run yum install -y cronie
+      else
+        run dnf install -y cronie
+      fi
+      run systemctl enable crond
+      run systemctl restart crond
+      ;;
+    *)
+      echo "[WARN] Unsupported OS_ID: $OS_ID. Install a cron daemon manually so the refresh job can run." >&2
+      ;;
+  esac
+}
+
 install_cloudflare_refresh_cron() {
   echo "==> [hardening] Installing weekly Cloudflare IP-range refresh cron job"
+  ensure_cron_installed
   local script_path="/usr/local/bin/refresh-cloudflare-fw.sh"
   local has_ufw="false"
   command -v ufw >/dev/null 2>&1 && has_ufw="true"
