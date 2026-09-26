@@ -18,6 +18,13 @@
 #
 # Example — only Docker, skip everything else:
 #   sudo INSTALL_NODE=false SYNC_REPO=false ./prod-bootstrap.sh
+#
+# Example — restrict 80/443 to Cloudflare's IP ranges only (system-level
+# enforcement to match nginx's CLOUDFLARE_PROXIED mode -- see
+# docker-compose.yml/RUNNING.md's "Cloudflare proxied DNS" section):
+#   sudo CLOUDFLARE_ONLY_WEB=true \
+#        AWS_SECURITY_GROUP_ID="sg-0123456789abcdef0" \
+#        ./prod-bootstrap.sh
 ###############################################################################
 set -Eeuo pipefail
 
@@ -71,6 +78,23 @@ REPO_URL="${GIT_BASE_URL}/${GITHUB_USERNAME}/${REPO_NAME}"                      
 REPO_BRANCH="${REPO_BRANCH:-main}"
 REPO_DEST="${REPO_DEST:-/opt/${APP_USER}}"  # where to clone the repo on the host
 REPO_DEPLOY_KEY="${REPO_DEPLOY_KEY:-/home/ubuntu/.ssh/id_ed25519}"          # path to an SSH deploy key file, optional
+
+# Cloudflare-only web access (defense-in-depth alongside nginx's
+# CLOUDFLARE_PROXIED mode -- see docker-compose.yml/RUNNING.md). When
+# enabled, restricts inbound 80/443 to Cloudflare's published IP ranges
+# instead of 0.0.0.0/0, both at the host firewall (ufw, Ubuntu/Debian) and
+# optionally the EC2 Security Group itself (any OS, via aws cli).
+CLOUDFLARE_ONLY_WEB="${CLOUDFLARE_ONLY_WEB:-false}"
+CLOUDFLARE_IPS_V4_URL="${CLOUDFLARE_IPS_V4_URL:-https://www.cloudflare.com/ips-v4}"
+CLOUDFLARE_IPS_V6_URL="${CLOUDFLARE_IPS_V6_URL:-https://www.cloudflare.com/ips-v6}"
+# Weekly cron job that re-fetches Cloudflare's ranges and re-applies them --
+# they rarely change, but this avoids silent drift over months/years.
+CLOUDFLARE_REFRESH_CRON="${CLOUDFLARE_REFRESH_CRON:-true}"
+# Optional: if set (and aws cli usable -- instance IAM role or configured
+# credentials), also lock down the EC2 Security Group's 80/443 rules to
+# Cloudflare's ranges. Required on Amazon Linux (host firewall is skipped
+# there in favor of Security Groups); optional extra layer on Ubuntu/Debian.
+AWS_SECURITY_GROUP_ID="${AWS_SECURITY_GROUP_ID:-}"
 
 echo "[INFO] Starting production bootstrap at $(date -u)"
 echo "[INFO] DRY_RUN=${DRY_RUN} | HARDENING=${INSTALL_COMMON_HARDENING} | NODE=${INSTALL_NODE} | DOCKER=${INSTALL_DOCKER} | SYNC_REPO=${SYNC_REPO}"
@@ -235,6 +259,161 @@ module_secure_ssh() {
   fi
 }
 
+# Downloads Cloudflare's current published IPv4+IPv6 ranges, one CIDR per
+# line. Read-only (never mutates anything), so it always runs for real even
+# under DRY_RUN -- callers decide what to do with the result.
+fetch_cloudflare_ranges() {
+  local v4 v6
+  v4="$(curl -fsSL "$CLOUDFLARE_IPS_V4_URL" 2>/dev/null || true)"
+  v6="$(curl -fsSL "$CLOUDFLARE_IPS_V6_URL" 2>/dev/null || true)"
+  if [[ -z "$v4" && -z "$v6" ]]; then
+    echo "[ERROR] Could not fetch Cloudflare IP ranges from ${CLOUDFLARE_IPS_V4_URL}/${CLOUDFLARE_IPS_V6_URL}." >&2
+    return 1
+  fi
+  printf '%s\n%s\n' "$v4" "$v6" | grep -E '^[0-9a-fA-F:.]+/[0-9]+$'
+}
+
+# Adds one 'ufw allow from <cidr> to any port 80,443 proto tcp' rule per
+# Cloudflare range instead of a single 0.0.0.0/0 rule -- so only Cloudflare's
+# edge (not the whole internet) can reach the web ports directly on this
+# host. Falls back to allowing from anywhere (with a clear warning) if the
+# ranges can't be fetched, so a transient network blip during bootstrap
+# never leaves the site completely unreachable.
+apply_cloudflare_ufw_rules() {
+  local ranges
+  if ! ranges="$(fetch_cloudflare_ranges)"; then
+    echo "[WARN] Falling back to allowing 80/443 from anywhere (0.0.0.0/0) -- could not fetch Cloudflare ranges." >&2
+    run ufw allow 80/tcp
+    run ufw allow 443/tcp
+    return 0
+  fi
+  local cidr
+  while IFS= read -r cidr; do
+    [[ -z "$cidr" ]] && continue
+    run ufw allow from "$cidr" to any port 80,443 proto tcp
+  done <<< "$ranges"
+}
+
+# Optionally also locks down the EC2 Security Group itself to Cloudflare's
+# ranges (works regardless of OS_ID -- required on Amazon Linux, where the
+# host firewall step is skipped in favor of Security Groups/NACLs). Requires
+# AWS_SECURITY_GROUP_ID to be set and the aws cli to be usable (instance IAM
+# role, or credentials already configured) -- silently skipped (with a clear
+# message) otherwise, since this is optional/best-effort.
+module_cloudflare_security_group() {
+  if [[ -z "$AWS_SECURITY_GROUP_ID" ]]; then
+    echo "[INFO] AWS_SECURITY_GROUP_ID not set -- skipping automatic EC2 Security Group management."
+    echo "[INFO] Restrict 80/443 to Cloudflare's ranges manually in the AWS console/CLI (see RUNNING.md)."
+    return 0
+  fi
+  if ! command -v aws >/dev/null 2>&1; then
+    echo "[WARN] aws cli not found -- cannot manage Security Group ${AWS_SECURITY_GROUP_ID} automatically." >&2
+    return 0
+  fi
+
+  local ranges
+  if ! ranges="$(fetch_cloudflare_ranges)"; then
+    echo "[WARN] Could not fetch Cloudflare ranges -- leaving Security Group ${AWS_SECURITY_GROUP_ID} unchanged." >&2
+    return 0
+  fi
+
+  echo "==> [hardening] Restricting Security Group ${AWS_SECURITY_GROUP_ID}'s 80/443 rules to Cloudflare's IP ranges"
+
+  # Remove any existing wide-open 0.0.0.0/0 / ::/0 rules for 80/443 first --
+  # best-effort, ignore failures (e.g. the rule doesn't exist).
+  local port
+  for port in 80 443; do
+    run aws ec2 revoke-security-group-ingress --group-id "$AWS_SECURITY_GROUP_ID" --protocol tcp --port "$port" --cidr 0.0.0.0/0 2>/dev/null || true
+    run aws ec2 revoke-security-group-ingress --group-id "$AWS_SECURITY_GROUP_ID" --protocol tcp --port "$port" --cidr ::/0 2>/dev/null || true
+  done
+
+  local cidr
+  while IFS= read -r cidr; do
+    [[ -z "$cidr" ]] && continue
+    for port in 80 443; do
+      if [[ "$cidr" == *:* ]]; then
+        run aws ec2 authorize-security-group-ingress --group-id "$AWS_SECURITY_GROUP_ID" \
+          --ip-permissions "IpProtocol=tcp,FromPort=${port},ToPort=${port},Ipv6Ranges=[{CidrIpv6=${cidr}}]" 2>/dev/null || true
+      else
+        run aws ec2 authorize-security-group-ingress --group-id "$AWS_SECURITY_GROUP_ID" --protocol tcp --port "$port" --cidr "$cidr" 2>/dev/null || true
+      fi
+    done
+  done <<< "$ranges"
+
+  echo "[INFO] Security Group ${AWS_SECURITY_GROUP_ID} now restricts 80/443 to Cloudflare's published ranges."
+}
+
+# Installs a weekly cron job that re-fetches Cloudflare's ranges and
+# re-applies both the ufw rules (Ubuntu/Debian) and the Security Group rules
+# (if AWS_SECURITY_GROUP_ID was set) -- self-contained (doesn't re-invoke
+# this whole bootstrap script, which would also re-run apt upgrades/SSH
+# restarts/etc. weekly). SSH_PORT/AWS_SECURITY_GROUP_ID are baked in at
+# install time from this run's resolved values.
+install_cloudflare_refresh_cron() {
+  echo "==> [hardening] Installing weekly Cloudflare IP-range refresh cron job"
+  local script_path="/usr/local/bin/refresh-cloudflare-fw.sh"
+  local has_ufw="false"
+  command -v ufw >/dev/null 2>&1 && has_ufw="true"
+
+  local refresh_script
+  refresh_script="$(cat <<EOF
+#!/usr/bin/env bash
+# Auto-generated by prod-bootstrap.sh -- re-applies Cloudflare-only web
+# access using the latest published IP ranges. Safe to re-run.
+set -Eeuo pipefail
+SSH_PORT="${SSH_PORT}"
+AWS_SECURITY_GROUP_ID="${AWS_SECURITY_GROUP_ID}"
+HAS_UFW="${has_ufw}"
+
+ranges="\$( { curl -fsSL https://www.cloudflare.com/ips-v4; curl -fsSL https://www.cloudflare.com/ips-v6; } 2>/dev/null | grep -E '^[0-9a-fA-F:.]+/[0-9]+\$' )"
+if [[ -z "\$ranges" ]]; then
+  echo "[ERROR] Could not fetch Cloudflare IP ranges; leaving firewall unchanged." >&2
+  exit 1
+fi
+
+if [[ "\$HAS_UFW" == "true" ]]; then
+  ufw --force reset
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw allow "\${SSH_PORT}/tcp"
+  while IFS= read -r cidr; do
+    [[ -z "\$cidr" ]] && continue
+    ufw allow from "\$cidr" to any port 80,443 proto tcp
+  done <<< "\$ranges"
+  ufw --force enable
+  echo "[INFO] ufw Cloudflare-only rules refreshed at \$(date -u)"
+fi
+
+if [[ -n "\$AWS_SECURITY_GROUP_ID" ]] && command -v aws >/dev/null 2>&1; then
+  for port in 80 443; do
+    aws ec2 revoke-security-group-ingress --group-id "\$AWS_SECURITY_GROUP_ID" --protocol tcp --port "\$port" --cidr 0.0.0.0/0 2>/dev/null || true
+    aws ec2 revoke-security-group-ingress --group-id "\$AWS_SECURITY_GROUP_ID" --protocol tcp --port "\$port" --cidr ::/0 2>/dev/null || true
+  done
+  while IFS= read -r cidr; do
+    [[ -z "\$cidr" ]] && continue
+    for port in 80 443; do
+      if [[ "\$cidr" == *:* ]]; then
+        aws ec2 authorize-security-group-ingress --group-id "\$AWS_SECURITY_GROUP_ID" \\
+          --ip-permissions "IpProtocol=tcp,FromPort=\${port},ToPort=\${port},Ipv6Ranges=[{CidrIpv6=\${cidr}}]" 2>/dev/null || true
+      else
+        aws ec2 authorize-security-group-ingress --group-id "\$AWS_SECURITY_GROUP_ID" --protocol tcp --port "\$port" --cidr "\$cidr" 2>/dev/null || true
+      fi
+    done
+  done <<< "\$ranges"
+  echo "[INFO] Security Group \$AWS_SECURITY_GROUP_ID Cloudflare-only rules refreshed at \$(date -u)"
+fi
+EOF
+)"
+  write_file "$script_path" "$refresh_script"
+  run chmod +x "$script_path"
+
+  local cron_line="0 3 * * 0 root ${script_path} >> /var/log/cloudflare-fw-refresh.log 2>&1"
+  write_file /etc/cron.d/cloudflare-fw-refresh "$cron_line"
+  run chmod 644 /etc/cron.d/cloudflare-fw-refresh
+
+  echo "[INFO] Weekly refresh installed: /etc/cron.d/cloudflare-fw-refresh (runs ${script_path})"
+}
+
 module_firewall() {
   echo "==> [hardening] Configuring firewall"
   case "$OS_ID" in
@@ -247,16 +426,34 @@ module_firewall() {
       run ufw default allow outgoing
       # 3. ALWAYS allow SSH first so you don't lock yourself out
       run ufw allow "${SSH_PORT}/tcp"
-      # 4. Allow HTTP and HTTPS for web traffic
-      run ufw allow 80/tcp
-      run ufw allow 443/tcp
+      # 4. Allow HTTP and HTTPS for web traffic -- restricted to Cloudflare's
+      #    ranges if CLOUDFLARE_ONLY_WEB=true (matches nginx's
+      #    CLOUDFLARE_PROXIED mode -- see docker-compose.yml/RUNNING.md),
+      #    otherwise open to everyone as before.
+      if [[ "$CLOUDFLARE_ONLY_WEB" == "true" ]]; then
+        echo "[INFO] CLOUDFLARE_ONLY_WEB=true -- restricting 80/443 to Cloudflare's published IP ranges instead of 0.0.0.0/0."
+        apply_cloudflare_ufw_rules
+      else
+        run ufw allow 80/tcp
+        run ufw allow 443/tcp
+      fi
       # 5. Enable UFW (force yes to avoid interactive prompt)
       run ufw --force enable
       ;;
     amzn)
       echo "[INFO] Skipping host firewall on Amazon Linux. Use EC2 Security Groups/NACLs instead."
+      if [[ "$CLOUDFLARE_ONLY_WEB" == "true" && -z "$AWS_SECURITY_GROUP_ID" ]]; then
+        echo "[WARN] CLOUDFLARE_ONLY_WEB=true on Amazon Linux but AWS_SECURITY_GROUP_ID is not set -- nothing will actually be restricted. Set AWS_SECURITY_GROUP_ID, or restrict 80/443 to Cloudflare's ranges manually." >&2
+      fi
       ;;
   esac
+
+  if [[ "$CLOUDFLARE_ONLY_WEB" == "true" ]]; then
+    module_cloudflare_security_group
+    if [[ "$CLOUDFLARE_REFRESH_CRON" == "true" ]]; then
+      install_cloudflare_refresh_cron
+    fi
+  fi
 }
 
 module_fail2ban() {

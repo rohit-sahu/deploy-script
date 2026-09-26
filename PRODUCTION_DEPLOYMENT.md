@@ -126,6 +126,67 @@ git pull
 ./deploy.sh                               # redeploys using the domain saved in .env
 ```
 
+**Certificate renewal (fully automatic, no action needed):**
+Caddy checks its certs roughly every 10 minutes and renews once ~30 days remain before expiry (`renewal_window_ratio 0.3333` in `Caddyfile`). If you've completed [step 9](#9-harden-against-direct-ip-access-cloudflare-only-firewall), this keeps working indefinitely because Cloudflare forwards the renewal's HTTP-01 challenge to your origin from its own (allowlisted) IP ranges — see [9c](#9c-lock-the-firewall-to-cloudflares-ip-ranges-only) for why. Spot-check anytime:
+```bash
+docker compose logs caddy --since 24h | grep -i renew
+openssl s_client -connect your-domain.com:443 -servername your-domain.com </dev/null 2>/dev/null | openssl x509 -noout -dates
+```
+
+## 9. Harden against direct-IP access (Cloudflare-only firewall)
+
+By default, `80`/`443` are open to the whole internet (`0.0.0.0/0`), so your site is reachable both via your domain **and** via the server's raw public IP. This section locks that down so only Cloudflare can reach your origin. **Do this only after step 7 (Verify) passes** — the very first certificate must be issued before you flip Cloudflare's proxy on, otherwise you'll hit a chicken-and-egg SSL failure (see [step 9c](#9c-why-the-order-matters-first-cert-vs-renewal) below).
+
+### 9a. Move DNS to Cloudflare (gray-cloud first)
+
+1. Add your domain to Cloudflare, update nameservers at your registrar.
+2. Create/confirm the `A` record → your server's public IP, with the cloud icon **gray (DNS-only)** for now.
+3. Cloudflare Dashboard → SSL/TLS → Overview → set mode to **Flexible** for now.
+4. Confirm propagation: `dig +short your-domain.com` returns your server's real IP.
+5. Deploy normally (step 5 above) and confirm step 7's `curl` checks pass — this issues the **first** Let's Encrypt certificate while DNS still points directly at your origin, avoiding any Cloudflare-related complications.
+
+### 9b. Turn on Cloudflare proxying
+
+1. Cloudflare Dashboard → DNS → click the DNS record's cloud icon → turns **orange (Proxied)**.
+2. Confirm: `dig +short your-domain.com` now returns a Cloudflare IP, not your server's.
+3. SSL/TLS → Overview → switch mode to **Full (strict)** (safe now — your origin already holds a valid cert from 9a).
+4. Redeploy with Cloudflare-proxied mode so nginx trusts `CF-Connecting-IP` from Cloudflare's ranges:
+   ```bash
+   ./deploy.sh --cloudflare-proxied your-domain.com
+   ```
+   (This makes nginx attribute the correct real client IP for logging/rate-limiting — it is **not** by itself an access-control mechanism; the actual blocking happens in step 9c below.)
+5. Sanity check both still work before locking the firewall down:
+   ```bash
+   curl -I https://your-domain.com     # via Cloudflare — should work
+   curl -I http://<server-public-ip>   # direct IP — still open at this point, expected
+   ```
+
+### 9c. Lock the firewall to Cloudflare's IP ranges only
+
+On the server:
+```bash
+sudo CLOUDFLARE_ONLY_WEB=true \
+     AWS_SECURITY_GROUP_ID="sg-xxxxxxxxxxxx" \
+     ./scripts/prod-bootstrap.sh
+```
+This (see [PROD-BOOTSTRAP.md](./PROD-BOOTSTRAP.md) for full details):
+- Restricts the host firewall (`ufw`, Ubuntu/Debian) to allow `80`/`443` only from Cloudflare's published IP ranges, instead of `0.0.0.0/0`.
+- If `AWS_SECURITY_GROUP_ID` is set (required on Amazon Linux, optional extra layer on Ubuntu/Debian), also rewrites that Security Group's `80`/`443` ingress rules to Cloudflare-only.
+- Installs a weekly cron job that re-fetches Cloudflare's ranges and re-applies both, so the allowlist never silently drifts out of date.
+- **Never touches port 22/SSH** — your SSH access is unaffected regardless of this setting.
+
+Verify:
+```bash
+curl -I http://<server-public-ip>   # should now time out / connection refused
+curl -I https://your-domain.com     # should still work fine, via Cloudflare
+```
+
+### Why the order matters (first cert vs. renewal)
+
+- **First-time issuance** needs your origin reachable directly (gray-cloud, open firewall) — Let's Encrypt's validator resolves your domain via public DNS and connects with *its own* IP, which isn't in Cloudflare's ranges. If the firewall is already Cloudflare-only at this point, issuance fails outright.
+- **Renewal**, once orange-cloud is on, works automatically forever after: Let's Encrypt's validator resolves your domain to Cloudflare's IP (not your origin's), Cloudflare receives the challenge request and forwards it to your origin from **its own IP range** — which is exactly what the firewall allowlists. Nothing needs to bypass Cloudflare or reach a "hidden" origin from the outside.
+- **Golden rule:** always bootstrap a fresh server in the order above — first cert with proxy off/firewall open, *then* flip proxy on, *then* lock the firewall down. Never do it in the reverse order.
+
 ## Reference: which file holds what
 
 | File | Purpose | Committed to git? | Edited by |

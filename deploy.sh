@@ -282,6 +282,60 @@ case "${CLOUDFLARE_PROXIED:-0}" in
 esac
 export CLOUDFLARE_PROXIED
 
+# Keep nginx's Cloudflare real-IP trust list (nginx/cloudflare-ips.conf)
+# current via a weekly cron job -- only relevant in CLOUDFLARE_PROXIED mode,
+# and only on a real server (--local is a throwaway dev machine). Interactive
+# runs are asked before adding/removing anything; non-interactive runs (CI,
+# automation) keep the previous safe default (install if missing, leave
+# alone if already present) so scripted deploys don't hang on a prompt.
+if [ "$CLOUDFLARE_PROXIED" -eq 1 ] && [ "$LOCAL" -ne 1 ]; then
+	if command -v crontab >/dev/null 2>&1; then
+		CRON_MARKER="# deploy-script:cloudflare-ips:update"
+		CRON_CMD="cd $(pwd) && npm run --silent cloudflare-ips:update >> /var/log/cloudflare-ips-update.log 2>&1"
+		existing_cron="$(crontab -l 2>/dev/null || true)"
+
+		if printf '%s\n' "$existing_cron" | grep -qF "$CRON_MARKER"; then
+			recreate_ans="n"
+			if [ -t 0 ]; then
+				read -p "==> Weekly cloudflare-ips:update cron already installed. Remove and recreate it? [y/N] " recreate_ans
+			fi
+			if [[ "$recreate_ans" =~ ^[Yy] ]]; then
+				echo "==> Removing existing cloudflare-ips:update cron entry"
+				existing_cron="$(printf '%s\n' "$existing_cron" | grep -vF "$CRON_MARKER" || true)"
+				printf '%s\n' "$existing_cron" | crontab -
+
+				install_ans="y"
+				if [ -t 0 ]; then
+					read -p "==> Add the weekly cloudflare-ips:update cron back now? [Y/n] " install_ans
+				fi
+				if [[ ! "$install_ans" =~ ^[Nn] ]]; then
+					echo "==> Installing weekly cloudflare-ips:update cron (keeps nginx's Cloudflare real-IP trust list current)"
+					{ [ -n "$existing_cron" ] && printf '%s\n' "$existing_cron"; echo "0 3 * * 0 ${CRON_CMD} ${CRON_MARKER}"; } | crontab -
+				else
+					echo "==> Skipped re-adding the cron; nginx/cloudflare-ips.conf won't auto-refresh -- run 'npm run cloudflare-ips:update' manually when needed."
+				fi
+			else
+				echo "==> Leaving existing cron entry as-is."
+			fi
+		else
+			install_ans="y"
+			if [ -t 0 ]; then
+				read -p "==> Install weekly cloudflare-ips:update cron (keeps nginx's Cloudflare real-IP trust list current)? [Y/n] " install_ans
+			fi
+			if [[ ! "$install_ans" =~ ^[Nn] ]]; then
+				echo "==> Installing weekly cloudflare-ips:update cron"
+				{ [ -n "$existing_cron" ] && printf '%s\n' "$existing_cron"; echo "0 3 * * 0 ${CRON_CMD} ${CRON_MARKER}"; } | crontab -
+			else
+				echo "==> Skipped. Add manually later with:"
+				echo "  0 3 * * 0 cd $(pwd) && npm run cloudflare-ips:update >> /var/log/cloudflare-ips-update.log 2>&1"
+			fi
+		fi
+	else
+		echo "WARNING: crontab not available; add this manually to keep nginx/cloudflare-ips.conf current:" >&2
+		echo "  0 3 * * 0 cd $(pwd) && npm run cloudflare-ips:update >> /var/log/cloudflare-ips-update.log 2>&1" >&2
+	fi
+fi
+
 if [ -z "$DOMAIN" ] && [ "$LOCAL" -ne 1 ] && [ -t 0 ]; then
 	read -p "Domain (e.g. your-domain.com): " DOMAIN
 fi
