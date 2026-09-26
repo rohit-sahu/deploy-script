@@ -7,19 +7,18 @@
 server {
 	listen 80 default_server;
 	server_name _;
-	return 444;
-}
-
-server {
-	listen 80;
-	server_name ${DOMAIN};
-
 	# Container healthcheck target; must not redirect (avoids following to
     # HTTPS and failing TLS verification against a not-yet-trusted cert).
     location = /healthz {
         default_type text/plain;
         return 200 "ok";
     }
+	return 444;
+}
+
+server {
+	listen 80;
+	server_name ${DOMAIN};
 
 	# Answer ACME HTTP-01 challenges by forwarding to the caddy companion.
 	# Host header must be preserved (nginx otherwise defaults it to the
